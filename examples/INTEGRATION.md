@@ -1,4 +1,4 @@
-# 集成指南 — 把 cove-cinema 接进你自己的聊天前端
+# 集成指南 — 把 clove-cinema 接进你自己的聊天前端
 
 这份给的不是"复制能跑的代码"，而是 **4 个关键挂点**。你的前端长啥样我不知道
 （vanilla JS / React / Vue / Svelte 都行），但只要按这 4 步抓住挂点就能接上。
@@ -9,7 +9,7 @@
 
 ## 0. 前提
 
-后端 `cove-cinema` 已经在跑（默认 `127.0.0.1:8770/cinema/*`）。
+后端 `clove-cinema` 已经在跑（默认 `127.0.0.1:8770/cinema/*`）。
 你的前端要能访问 `/cinema/list`、`/cinema/sync/...`、`/cinema/stream/...` 这几个路由
 —— 同源最省事，跨域记得给后端配 `--allow-origin`。
 
@@ -35,7 +35,7 @@ cinemaPlayer.init({ baseUrl: '/cinema' });   // 跨域时填完整 URL
 window.cinemaPlayer = cinemaPlayer;          // 可选：暴露给其他模块用
 ```
 
-`baseUrl` 是 cove-cinema 的路由前缀。同源用 `/cinema`，跨域填
+`baseUrl` 是 clove-cinema 的路由前缀。同源用 `/cinema`，跨域填
 `https://films.your.site/cinema` 之类的。
 
 挂完它默认隐藏。`open(id, title)` 才显示并开始播。
@@ -228,7 +228,7 @@ AI 综合字幕 + 画面 + 你的问题答你。
 
 `cinema-player.css` 里的颜色 / 圆角 / z-index 全是建议值。
 你的 app 有自己的设计语言就改 `.cc-bar` 背景、`.cc-btn` 颜色、
-`#cove-cinema` 的 border-radius 等。JS 那边不用动。
+`#clove-cinema` 的 border-radius 等。JS 那边不用动。
 
-挂位置不喜欢右下角？改 `#cove-cinema` 的 `right` / `bottom` 默认值。
+挂位置不喜欢右下角？改 `#clove-cinema` 的 `right` / `bottom` 默认值。
 用户拖过之后位置会存 localStorage，下次开还在原位。

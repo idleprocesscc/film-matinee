@@ -1,5 +1,5 @@
-/* cove-cinema 浮窗 — 参考样式。配色中性偏暗，朋友按需改。 */
-#cove-cinema {
+/* clove-cinema 浮窗 — 参考样式。配色中性偏暗，朋友按需改。 */
+#clove-cinema {
   position: fixed;
   right: 24px;
   bottom: 24px;
@@ -15,12 +15,12 @@
   overflow: hidden;
   user-select: none;
 }
-#cove-cinema.cc-mini {
+#clove-cinema.cc-mini {
   height: 36px !important;
   width: 220px !important;
 }
-#cove-cinema.cc-mini video,
-#cove-cinema.cc-mini .cc-resize { display: none; }
+#clove-cinema.cc-mini video,
+#clove-cinema.cc-mini .cc-resize { display: none; }
 
 .cc-bar {
   height: 28px;
@@ -53,7 +53,7 @@
 .cc-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .cc-close { font-size: 18px; }
 
-#cove-cinema video {
+#clove-cinema video {
   flex: 1 1 auto;
   width: 100%;
   height: calc(100% - 28px);

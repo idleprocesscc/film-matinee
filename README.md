@@ -1,4 +1,4 @@
-# cove-cinema
+# clove-cinema
 
 > 极简放映室后端 — 给"我和我的 AI 一起看电影"用的。
 >
@@ -20,8 +20,8 @@
 ## 装
 
 ```bash
-git clone <this-repo> cove-cinema
-cd cove-cinema
+git clone <this-repo> clove-cinema
+cd clove-cinema
 pip install -r requirements.txt
 ```
 
@@ -45,16 +45,16 @@ python server.py --port 8800 --root /data/films --bind 0.0.0.0
 环境变量等价：
 
 ```bash
-COVE_CINEMA_PORT=8800
-COVE_CINEMA_BIND=0.0.0.0
-COVE_CINEMA_ROOT=/data/films
-COVE_CINEMA_PREFIX=/cinema           # 路由前缀，默认 /cinema
-COVE_CINEMA_ALLOW_ORIGIN=https://your.site  # 跨域时设；同源不用
+CLOVE_CINEMA_PORT=8800
+CLOVE_CINEMA_BIND=0.0.0.0
+CLOVE_CINEMA_ROOT=/data/films
+CLOVE_CINEMA_PREFIX=/cinema           # 路由前缀，默认 /cinema
+CLOVE_CINEMA_ALLOW_ORIGIN=https://your.site  # 跨域时设；同源不用
 ```
 
 部署模板见 `examples/`：
-- `launchd.com.cove-cinema.plist.example` — Mac mini
-- `systemd-cove-cinema.service.example` — Linux/VPS
+- `launchd.com.clove-cinema.plist.example` — Mac mini
+- `systemd-clove-cinema.service.example` — Linux/VPS
 
 ## 放片
 
@@ -120,7 +120,7 @@ python server.py --allow-origin https://your.site
 
 ```python
 from aiohttp import web
-from server import setup_routes  # 或 from cove_cinema_server import setup_routes
+from server import setup_routes  # 或 from clove_cinema_server import setup_routes
 from pathlib import Path
 
 app = web.Application()

@@ -1,4 +1,4 @@
-// cove-cinema 浮窗播放器 — 参考实现
+// clove-cinema 浮窗播放器 — 参考实现
 //
 // 设计：挂在 body 上的全局浮动 <video>，跨页面/路由不销毁。
 // 可拖拽、可缩放、可最小化、可关闭。位置/大小 localStorage 持久化。
@@ -14,8 +14,8 @@
 // 朋友把这个文件丢进自己的 shell，按需改样式 / 改交互即可。
 // 跟你自己的 chat 前端集成的细节见 examples/INTEGRATION.md。
 
-const POS_KEY = 'cove-cinema:pos';
-const SIZE_KEY = 'cove-cinema:size';
+const POS_KEY = 'clove-cinema:pos';
+const SIZE_KEY = 'clove-cinema:size';
 
 let baseUrl = '/cinema';
 let wrap = null;
@@ -35,18 +35,18 @@ function saveSize(w, h) { localStorage.setItem(SIZE_KEY, JSON.stringify({ w, h }
 function ensureDom() {
   if (wrap) return;
   wrap = document.createElement('div');
-  wrap.id = 'cove-cinema';
+  wrap.id = 'clove-cinema';
   wrap.innerHTML = `
     <div class="cc-bar">
       <span class="cc-title" id="cc-title"></span>
       <button class="cc-btn cc-min" title="最小化">—</button>
       <button class="cc-btn cc-close" title="关闭">×</button>
     </div>
-    <video id="cove-cinema-video" playsinline controls preload="metadata"></video>
+    <video id="clove-cinema-video" playsinline controls preload="metadata"></video>
     <div class="cc-resize" title="拖拽改变大小"></div>
   `;
   document.body.appendChild(wrap);
-  videoEl = wrap.querySelector('#cove-cinema-video');
+  videoEl = wrap.querySelector('#clove-cinema-video');
 }
 
 function applySavedGeom() {
@@ -170,7 +170,7 @@ export const cinemaPlayer = {
     canvas.height = Math.round(canvas.width / (ratio || 16 / 9));
     canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
     try { return canvas.toDataURL('image/jpeg', 0.7); }
-    catch (e) { console.warn('[cove-cinema] snapshot failed', e); return null; }
+    catch (e) { console.warn('[clove-cinema] snapshot failed', e); return null; }
   },
   subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
 };

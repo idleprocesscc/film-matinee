@@ -1,12 +1,12 @@
-# systemd unit — Linux / VPS 上跑 cove-cinema。
+# systemd unit — Linux / VPS 上跑 clove-cinema。
 #
 # 装：
 #   1. 改下面三处 REPLACE_*
-#   2. sudo cp 这个文件到 /etc/systemd/system/cove-cinema.service
+#   2. sudo cp 这个文件到 /etc/systemd/system/clove-cinema.service
 #   3. sudo systemctl daemon-reload
-#   4. sudo systemctl enable --now cove-cinema
-#   5. 看日志：journalctl -u cove-cinema -f
-#   6. 重启：sudo systemctl restart cove-cinema
+#   4. sudo systemctl enable --now clove-cinema
+#   5. 看日志：journalctl -u clove-cinema -f
+#   6. 重启：sudo systemctl restart clove-cinema
 #
 # 配 nginx 反代示例（前端不直连 8770，走 https）：
 #   location /cinema/ {
@@ -22,14 +22,14 @@
 #   }
 
 [Unit]
-Description=cove-cinema video streaming backend
+Description=clove-cinema video streaming backend
 After=network.target
 
 [Service]
 Type=simple
 User=REPLACE_WITH_USERNAME
-WorkingDirectory=REPLACE_WITH_FULL_PATH/cove-cinema
-ExecStart=/usr/bin/python3 REPLACE_WITH_FULL_PATH/cove-cinema/server.py --port 8770 --root REPLACE_WITH_VIDEOS_PATH
+WorkingDirectory=REPLACE_WITH_FULL_PATH/clove-cinema
+ExecStart=/usr/bin/python3 REPLACE_WITH_FULL_PATH/clove-cinema/server.py --port 8770 --root REPLACE_WITH_VIDEOS_PATH
 Restart=on-failure
 RestartSec=3
 

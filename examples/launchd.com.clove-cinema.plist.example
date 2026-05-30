@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mac mini / macOS 用 LaunchAgent 启动 clove-cinema。
+
+  装：
+    1. 改下面三处 <REPLACE_*>
+    2. cp 到 ~/Library/LaunchAgents/com.clove-cinema.plist
+    3. launchctl load -w ~/Library/LaunchAgents/com.clove-cinema.plist
+    4. 想重启：launchctl kickstart -k gui/$UID/com.clove-cinema
+    5. 想停：launchctl unload ~/Library/LaunchAgents/com.clove-cinema.plist
+
+  日志在 ~/Library/Logs/clove-cinema.{out,err}.log
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.clove-cinema</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>REPLACE_WITH_FULL_PATH/clove-cinema/server.py</string>
+        <string>--port</string>
+        <string>8770</string>
+        <string>--root</string>
+        <string>REPLACE_WITH_HOME/cinema</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_FULL_PATH/clove-cinema</string>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_HOME/Library/Logs/clove-cinema.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_HOME/Library/Logs/clove-cinema.err.log</string>
+</dict>
+</plist>
