@@ -31,8 +31,8 @@ python3 tools/generate_film_matinee_sheets.py \
   --video /path/to/movie.mkv \
   --subtitle /path/to/subtitles.ass \
   --title "Movie Title" \
-  --layout 5x4 \
-  --target-keyframes 18 \
+  --layout 4x3 \
+  --target-keyframes 12 \
   --out-dir .film-matinee-cache/movie-title \
   --max-sheets 0
 ```

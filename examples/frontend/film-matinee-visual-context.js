@@ -10,14 +10,14 @@ const DEFAULTS = {
   windowSec: 90,
   minSheetSec: 60,
   maxSheetSec: 600,
-  targetKeyframesPerSheet: 16,
+  targetKeyframesPerSheet: 12,
   rowSec: 30,
   sampleStepSec: 1,
   sheetWidth: 1600,
   rowHeight: 168,
   maxRowsPerSheet: 3,
-  keyframesPerRow: 5,
-  maxKeyframes: 20,
+  keyframesPerRow: 4,
+  maxKeyframes: 12,
   keyframeWidth: 230,
   keyframeHeight: 130,
   bandPixelsPerSecond: 3,
@@ -979,9 +979,9 @@ function chooseAdaptiveEnd(from, candidateTo, selections, options) {
   if (duration <= 0) return candidateTo;
 
   const minEnd = Math.min(candidateTo, from + Math.max(0, Number(options.minSheetSec) || 0));
-  const maxKeyframes = Math.max(2, Math.floor(Number(options.maxKeyframes) || 20));
+  const maxKeyframes = Math.max(2, Math.floor(Number(options.maxKeyframes) || DEFAULTS.maxKeyframes));
   const targetKeyframes = clamp(
-    Math.floor(Number(options.targetKeyframesPerSheet) || Math.min(16, maxKeyframes)),
+    Math.floor(Number(options.targetKeyframesPerSheet) || Math.min(12, maxKeyframes)),
     2,
     maxKeyframes,
   );

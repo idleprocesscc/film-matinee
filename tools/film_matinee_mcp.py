@@ -90,7 +90,7 @@ def _default_out_dir(video_path: Path) -> Path:
 
 
 def _normalize_layout(layout: str) -> str:
-    layout = str(layout or "5x4").strip().lower()
+    layout = str(layout or "4x3").strip().lower()
     if not re.fullmatch(r"\d+x\d+", layout):
         raise ValueError("layout must look like 5x4 or 4x3")
     return layout
@@ -101,8 +101,8 @@ def _build_generate_command(
     subtitle_path: str = "",
     out_dir: str = "",
     title: str = "",
-    layout: str = "5x4",
-    target_keyframes: int = 18,
+    layout: str = "4x3",
+    target_keyframes: int = 12,
     max_sheets: int = 0,
     start_time: str = "",
     end_time: str = "",
@@ -394,8 +394,8 @@ def film_generate_command(
     subtitle_path: str = "",
     out_dir: str = "",
     title: str = "",
-    layout: str = "5x4",
-    target_keyframes: int = 18,
+    layout: str = "4x3",
+    target_keyframes: int = 12,
     max_sheets: int = 0,
     start_time: str = "",
     end_time: str = "",
@@ -437,8 +437,8 @@ def film_generate(
     subtitle_path: str = "",
     out_dir: str = "",
     title: str = "",
-    layout: str = "5x4",
-    target_keyframes: int = 18,
+    layout: str = "4x3",
+    target_keyframes: int = 12,
     max_sheets: int = 0,
     start_time: str = "",
     end_time: str = "",
