@@ -39,6 +39,9 @@ python3 tools/generate_film_matinee_sheets.py \
 
 常用工具：
 
+- `film_generate(video_path, subtitle_path="", out_dir="", ...)`：从本地视频/字幕生成 sheets。默认后台运行，完成后读返回的 `manifest`。
+- `film_generate_status(out_dir)`：查看后台生成进度和最新 sheet。
+- `film_generate_command(video_path, ...)`：只返回命令，适合用户想先检查参数时。
 - `film_overview(manifest_path)`：看一共有多少 chunk。
 - `film_start(manifest_path, start_index=0)`：从某节开始，并返回该 sheet 图像和 sidecar。
 - `film_next(manifest_path)`：正常线性观影。
@@ -56,6 +59,29 @@ python3 tools/generate_film_matinee_sheets.py \
 - 音频 rail 在 chunk 内归一化，只比较这一节内部的强弱。
 - 关键帧下方短句只是语义锚点，完整字幕以 sidecar 为准。
 - 看到值得留给用户的解释、疑问、母题或观影提示时，用 `film_note` 写入批注。
+
+### 让 Claude 直接导入
+
+如果 Claude Code 已经注册了 MCP，也能直接从本地资源开始：
+
+```text
+用 film_generate 处理这部电影：
+video_path=/path/to/movie.mkv
+subtitle_path=/path/to/subtitles.ass
+out_dir=.cinema-cache/movie-title
+layout=5x4
+subtitle_offset_sec=-29.5
+```
+
+然后让它调用：
+
+```text
+film_generate_status(".cinema-cache/movie-title")
+film_overview(".cinema-cache/movie-title/manifest.json")
+film_start(".cinema-cache/movie-title/manifest.json")
+```
+
+多部电影不会串台：每部电影一个 `out_dir`，游标状态和批注都存在这个目录里。导入新片时换一个新的 `out_dir` 即可。
 
 ## 批注同步
 

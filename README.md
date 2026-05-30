@@ -72,6 +72,9 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 
 常用工具：
 
+- `film_generate(video_path, subtitle_path="", out_dir="", ...)`：从本地视频/字幕生成 sheets。
+- `film_generate_status(out_dir)`：查看后台生成进度。
+- `film_generate_command(video_path, ...)`：只生成命令，不执行。
 - `film_overview(manifest_path)`：查看 chunk 索引。
 - `film_start(manifest_path, start_index=0)`：从某节开始读。
 - `film_next(manifest_path)`：继续下一节。
@@ -79,6 +82,8 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 - `film_locate(manifest_path, timecode="", text="")`：兜底定位。
 - `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
 - `film_reply(manifest_path, note_id, text, author="user")`：把聊天挂在批注下。
+
+多部电影互不影响：每部电影生成到一个独立 `out_dir`，里面有自己的 `manifest.json`、`.film-matinee-state.json` 和 `annotations.json`。Claude 读哪部电影，就把那部电影的 `manifest.json` 传给 `film_start` / `film_next`。
 
 ## Local Cinema Server
 

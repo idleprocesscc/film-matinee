@@ -13,7 +13,11 @@ Each chunk returns a compact text packet plus the corresponding sheet image.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
+import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,11 +32,14 @@ mcp = FastMCP(
         "Read generated film-matinee sheets linearly. Prefer film_next for "
         "the normal viewing flow; use film_locate only as a fallback when the "
         "user mentions a timecode, subtitle, or remembered event. Add notes "
-        "with film_note when a chunk deserves a durable comment for the user."
+        "with film_note when a chunk deserves a durable comment for the user. "
+        "Use film_generate when the user has a local video/subtitle that has "
+        "not been converted into sheets yet."
     ),
 )
 
 _cursors: dict[str, int] = {}
+_jobs: dict[str, subprocess.Popen[str]] = {}
 
 
 def _manifest_path(manifest_path: str) -> Path:
@@ -58,6 +65,109 @@ def _state_path(manifest: Path) -> Path:
 
 def _annotations_path(manifest: Path) -> Path:
     return manifest.parent / "annotations.json"
+
+
+def _generator_script() -> Path:
+    return Path(__file__).resolve().parent / "generate_film_matinee_sheets.py"
+
+
+def _job_path(out_dir: Path) -> Path:
+    return out_dir / ".film-matinee-generate.json"
+
+
+def _log_path(out_dir: Path) -> Path:
+    return out_dir / "film-matinee-generate.log"
+
+
+def _slug(value: str) -> str:
+    value = Path(value).stem if value else "film"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._").lower()
+    return slug or "film"
+
+
+def _default_out_dir(video_path: Path) -> Path:
+    return Path.cwd() / ".cinema-cache" / _slug(video_path.stem)
+
+
+def _normalize_layout(layout: str) -> str:
+    layout = str(layout or "5x4").strip().lower()
+    if not re.fullmatch(r"\d+x\d+", layout):
+        raise ValueError("layout must look like 5x4 or 4x3")
+    return layout
+
+
+def _build_generate_command(
+    video_path: str,
+    subtitle_path: str = "",
+    out_dir: str = "",
+    title: str = "",
+    layout: str = "5x4",
+    target_keyframes: int = 18,
+    max_sheets: int = 0,
+    start_time: str = "",
+    end_time: str = "",
+    subtitle_offset_sec: float = 0.0,
+    subtitle_style_include: str = "",
+    subtitle_style_exclude: str = "JP|Ruby",
+    max_sheet_sec: float = 420.0,
+    sample_step_sec: float = 1.0,
+) -> tuple[list[str], Path, Path, Path]:
+    video = Path(video_path).expanduser().resolve()
+    if not video.exists():
+        raise FileNotFoundError(f"video not found: {video}")
+    subtitle = Path(subtitle_path).expanduser().resolve() if subtitle_path else None
+    if subtitle is not None and not subtitle.exists():
+        raise FileNotFoundError(f"subtitle not found: {subtitle}")
+    out = Path(out_dir).expanduser().resolve() if out_dir else _default_out_dir(video)
+    out.mkdir(parents=True, exist_ok=True)
+    layout = _normalize_layout(layout)
+
+    cmd = [
+        sys.executable,
+        str(_generator_script()),
+        "--video", str(video),
+        "--out-dir", str(out),
+        "--layout", layout,
+        "--target-keyframes", str(int(target_keyframes)),
+        "--max-sheets", str(int(max_sheets)),
+        "--subtitle-style-exclude", subtitle_style_exclude,
+        "--max-sheet-sec", str(float(max_sheet_sec)),
+        "--sample-step-sec", str(float(sample_step_sec)),
+    ]
+    if subtitle:
+        cmd.extend(["--subtitle", str(subtitle)])
+    if title:
+        cmd.extend(["--title", title])
+    if start_time:
+        seconds = _parse_timecode(start_time)
+        if seconds is None:
+            raise ValueError(f"bad start_time: {start_time}")
+        cmd.extend(["--from", str(seconds)])
+    if end_time:
+        seconds = _parse_timecode(end_time)
+        if seconds is None:
+            raise ValueError(f"bad end_time: {end_time}")
+        cmd.extend(["--to", str(seconds)])
+    if subtitle_offset_sec:
+        cmd.extend(["--subtitle-offset-sec", str(float(subtitle_offset_sec))])
+    if subtitle_style_include:
+        cmd.extend(["--subtitle-style-include", subtitle_style_include])
+
+    return cmd, out, out / "manifest.json", _log_path(out)
+
+
+def _read_job(out_dir: Path) -> dict[str, Any]:
+    path = _job_path(out_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_job(out_dir: Path, data: dict[str, Any]) -> None:
+    _job_path(out_dir).write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
 
 
 def _read_saved_cursor(manifest: Path) -> int:
@@ -276,6 +386,199 @@ def _chunk_response(manifest_path: Path, manifest: dict[str, Any], sheet: dict[s
     if image:
         return [text, image]
     return [text]
+
+
+@mcp.tool()
+def film_generate_command(
+    video_path: str,
+    subtitle_path: str = "",
+    out_dir: str = "",
+    title: str = "",
+    layout: str = "5x4",
+    target_keyframes: int = 18,
+    max_sheets: int = 0,
+    start_time: str = "",
+    end_time: str = "",
+    subtitle_offset_sec: float = 0.0,
+    subtitle_style_include: str = "",
+    subtitle_style_exclude: str = "JP|Ruby",
+    max_sheet_sec: float = 420.0,
+    sample_step_sec: float = 1.0,
+) -> str:
+    """Return the generator command for a local film without running it."""
+    cmd, out, manifest, log = _build_generate_command(
+        video_path,
+        subtitle_path,
+        out_dir,
+        title,
+        layout,
+        target_keyframes,
+        max_sheets,
+        start_time,
+        end_time,
+        subtitle_offset_sec,
+        subtitle_style_include,
+        subtitle_style_exclude,
+        max_sheet_sec,
+        sample_step_sec,
+    )
+    return "\n".join([
+        f"out_dir: {out}",
+        f"manifest: {manifest}",
+        f"log: {log}",
+        "command:",
+        " ".join(shlex.quote(part) for part in cmd),
+    ])
+
+
+@mcp.tool()
+def film_generate(
+    video_path: str,
+    subtitle_path: str = "",
+    out_dir: str = "",
+    title: str = "",
+    layout: str = "5x4",
+    target_keyframes: int = 18,
+    max_sheets: int = 0,
+    start_time: str = "",
+    end_time: str = "",
+    subtitle_offset_sec: float = 0.0,
+    subtitle_style_include: str = "",
+    subtitle_style_exclude: str = "JP|Ruby",
+    max_sheet_sec: float = 420.0,
+    sample_step_sec: float = 1.0,
+    background: bool = True,
+) -> str:
+    """Generate film-matinee sheets from local video/subtitles.
+
+    Defaults to a background full-film run. Use film_generate_status(out_dir)
+    until it reports complete, then pass the returned manifest path to
+    film_overview / film_start.
+    """
+    cmd, out, manifest, log = _build_generate_command(
+        video_path,
+        subtitle_path,
+        out_dir,
+        title,
+        layout,
+        target_keyframes,
+        max_sheets,
+        start_time,
+        end_time,
+        subtitle_offset_sec,
+        subtitle_style_include,
+        subtitle_style_exclude,
+        max_sheet_sec,
+        sample_step_sec,
+    )
+    job_key = str(out)
+    existing = _jobs.get(job_key)
+    if existing and existing.poll() is None:
+        return f"already running pid={existing.pid}\nout_dir: {out}\nmanifest: {manifest}\nlog: {log}"
+
+    if background:
+        log_handle = log.open("a", encoding="utf-8")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(Path.cwd()),
+            start_new_session=True,
+        )
+        log_handle.close()
+        _jobs[job_key] = proc
+        _write_job(out, {
+            "status": "running",
+            "pid": proc.pid,
+            "started_at": _now(),
+            "command": cmd,
+            "manifest": str(manifest),
+            "log": str(log),
+        })
+        return "\n".join([
+            f"started pid={proc.pid}",
+            f"out_dir: {out}",
+            f"manifest: {manifest}",
+            f"log: {log}",
+            "Call film_generate_status(out_dir) to monitor progress.",
+        ])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path.cwd()))
+    _write_job(out, {
+        "status": "complete" if result.returncode == 0 else "failed",
+        "returncode": result.returncode,
+        "finished_at": _now(),
+        "command": cmd,
+        "manifest": str(manifest),
+        "log": str(log),
+    })
+    log.write_text((result.stdout or "") + (result.stderr or ""), "utf-8")
+    if result.returncode != 0:
+        raise RuntimeError(f"film generation failed with code {result.returncode}; see {log}")
+    return f"generated\nmanifest: {manifest}\nlog: {log}"
+
+
+@mcp.tool()
+def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
+    """Check a film_generate job and report manifest/sheet progress."""
+    out = Path(out_dir).expanduser().resolve()
+    manifest = out / "manifest.json"
+    log = _log_path(out)
+    job = _read_job(out)
+    proc = _jobs.get(str(out))
+    if proc is not None:
+        code = proc.poll()
+        if code is None:
+            job["status"] = "running"
+            job["pid"] = proc.pid
+        else:
+            job["status"] = "complete" if code == 0 else "failed"
+            job["returncode"] = code
+            job.setdefault("finished_at", _now())
+            _write_job(out, job)
+    elif job.get("status") == "running" and job.get("pid"):
+        try:
+            os.kill(int(job["pid"]), 0)
+            job["status"] = "running-untracked"
+        except ProcessLookupError:
+            job["status"] = "stopped"
+            job.setdefault("finished_at", _now())
+            _write_job(out, job)
+        except PermissionError:
+            job["status"] = "running-untracked"
+    elif not job and manifest.exists():
+        job["status"] = "manifest-available"
+
+    sheets = []
+    title = ""
+    if manifest.exists():
+        try:
+            data = json.loads(manifest.read_text("utf-8"))
+            title = data.get("title", "")
+            sheets = data.get("sheets", [])
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    tail = ""
+    if log.exists():
+        lines = log.read_text("utf-8", "ignore").splitlines()
+        tail = "\n".join(lines[-max(0, int(tail_lines)):])
+
+    lines = [
+        f"out_dir: {out}",
+        f"manifest: {manifest}",
+        f"log: {log}",
+        f"status: {job.get('status', 'unknown')}",
+        f"title: {title}" if title else "",
+        f"sheets: {len(sheets)}",
+    ]
+    if sheets:
+        start, end = sheets[-1].get("time_range", [0, 0])
+        lines.append(f"latest: {int(sheets[-1].get('index', 0)):03d} {_fmt_time(float(start))}-{_fmt_time(float(end))}")
+    if tail:
+        lines.extend(["", "[log-tail]", tail, "[/log-tail]"])
+    return "\n".join(line for line in lines if line)
 
 
 @mcp.tool()
