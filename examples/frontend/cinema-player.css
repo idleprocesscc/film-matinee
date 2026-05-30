@@ -1,0 +1,71 @@
+/* cove-cinema 浮窗 — 参考样式。配色中性偏暗，朋友按需改。 */
+#cove-cinema {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 360px;
+  height: 240px;
+  display: none;
+  flex-direction: column;
+  background: #000;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  z-index: 9998;
+  overflow: hidden;
+  user-select: none;
+}
+#cove-cinema.cc-mini {
+  height: 36px !important;
+  width: 220px !important;
+}
+#cove-cinema.cc-mini video,
+#cove-cinema.cc-mini .cc-resize { display: none; }
+
+.cc-bar {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px 0 12px;
+  background: rgba(28,28,32,0.95);
+  color: #D8D0E0;
+  font-size: 12px;
+  cursor: grab;
+  touch-action: none;
+  flex: 0 0 auto;
+}
+.cc-bar:active { cursor: grabbing; }
+.cc-title {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cc-btn {
+  width: 22px; height: 22px;
+  border: none; background: transparent;
+  color: #B8B0C0; cursor: pointer;
+  font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.cc-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.cc-close { font-size: 18px; }
+
+#cove-cinema video {
+  flex: 1 1 auto;
+  width: 100%;
+  height: calc(100% - 28px);
+  background: #000;
+  object-fit: contain;
+}
+
+.cc-resize {
+  position: absolute;
+  right: 0; bottom: 0;
+  width: 16px; height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,0.3) 50%);
+  touch-action: none;
+}
