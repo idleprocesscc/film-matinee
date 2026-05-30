@@ -51,6 +51,8 @@ python3 tools/film_matinee_notes_server.py \
 http://127.0.0.1:8788/examples/frontend/film-matinee-viewer.html?notes=http://127.0.0.1:8792
 ```
 
+viewer 右侧有 `Chunk Notes` 和 `All Notes` 两个入口：前者看当前 chunk 的批注和回复，后者看整部片子的批注索引，并可跳回对应 chunk。
+
 ## MCP 工具
 
 ```json

@@ -101,6 +101,8 @@ http://127.0.0.1:8788/examples/frontend/film-matinee-viewer.html?notes=http://12
 
 viewer 会轮询 `annotations.json`。AI 用 `film_note` 写的评论会出现在右侧；用户在评论下回复时，会追加到同一条 note 的 `replies` 数组里。
 
+右侧 `Chunk Notes` 只显示当前 chunk 的批注；`All Notes` 是整部片子的批注入口，可以浏览 Claude/用户留下的全部评论，并跳回对应 chunk 继续看图和回复。
+
 ## 视觉密度
 
 现在推荐两档：

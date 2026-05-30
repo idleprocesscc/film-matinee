@@ -13,6 +13,7 @@
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: #0b0b0c; }
+    [hidden] { display: none !important; }
     button, input, textarea {
       font: inherit;
       color: inherit;
@@ -51,7 +52,11 @@
     }
     aside { border-right: 0; border-left: 1px solid rgba(255,255,255,0.1); }
     #chunks { display: grid; gap: 4px; padding: 10px; }
-    #chunks button { text-align: left; line-height: 1.25; }
+    #chunks button { text-align: left; line-height: 1.25; display: grid; gap: 4px; }
+    .chunk-note-count {
+      color: rgba(243,240,232,0.58);
+      font-size: 11px;
+    }
     #stage { padding: 14px; overflow: auto; }
     #sheet {
       display: block;
@@ -69,11 +74,30 @@
       color: rgba(243,240,232,0.82);
       max-width: 980px;
     }
+    #note-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      padding: 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    #note-tabs button { text-align: center; }
     #notes { padding: 10px; display: grid; gap: 10px; }
     .note {
       border: 1px solid rgba(255,255,255,0.14);
       padding: 10px;
       background: #141518;
+    }
+    .note-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+    }
+    .note-jump {
+      padding: 4px 7px;
+      font-size: 12px;
+      white-space: nowrap;
     }
     .note-meta, .reply-meta {
       color: rgba(243,240,232,0.55);
@@ -81,6 +105,11 @@
       margin-bottom: 5px;
     }
     .note-text, .reply-text { white-space: pre-wrap; line-height: 1.42; }
+    .note-scope {
+      color: rgba(243,240,232,0.7);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
     .replies { margin-top: 10px; display: grid; gap: 8px; }
     .reply { border-left: 2px solid rgba(243,240,232,0.22); padding-left: 8px; }
     .note form { display: grid; gap: 6px; margin-top: 10px; }
@@ -105,6 +134,10 @@
       <pre id="sidecar"></pre>
     </section>
     <aside>
+      <div id="note-tabs">
+        <button id="chunk-notes-tab" type="button">Chunk Notes</button>
+        <button id="all-notes-tab" type="button">All Notes</button>
+      </div>
       <div id="notes"></div>
       <form id="new-note">
         <input id="note-timecode" placeholder="timecode">
@@ -122,6 +155,7 @@
       manifest: null,
       annotations: { version: 1, annotations: [] },
       chunkIndex: Number(params.get("chunk") || 0),
+      view: params.get("view") === "all-notes" ? "all-notes" : "chunk-notes",
     };
 
     function fmtTime(seconds) {
@@ -181,8 +215,30 @@
         || state.manifest.sheets[0];
     }
 
+    function sheetForChunk(index) {
+      return state.manifest.sheets.find((sheet) => Number(sheet.index) === Number(index)) || null;
+    }
+
+    function allNotes() {
+      return [...(state.annotations.annotations || [])].sort((a, b) => {
+        const chunkA = Number.isFinite(Number(a.chunk_index)) ? Number(a.chunk_index) : 0;
+        const chunkB = Number.isFinite(Number(b.chunk_index)) ? Number(b.chunk_index) : 0;
+        if (chunkA !== chunkB) return chunkA - chunkB;
+        const timeA = Number.isFinite(Number(a.time_seconds)) ? Number(a.time_seconds) : Number.POSITIVE_INFINITY;
+        const timeB = Number.isFinite(Number(b.time_seconds)) ? Number(b.time_seconds) : Number.POSITIVE_INFINITY;
+        if (timeA !== timeB) return timeA - timeB;
+        return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+      });
+    }
+
     function notesForChunk(index) {
-      return (state.annotations.annotations || []).filter((note) => Number(note.chunk_index) === Number(index));
+      return allNotes().filter((note) => Number(note.chunk_index) === Number(index));
+    }
+
+    function noteChunkLabel(note) {
+      const sheet = sheetForChunk(note.chunk_index);
+      const range = note.chunk_time_range || sheet?.time_range || [0, 0];
+      return `${String(Number(note.chunk_index) || 0).padStart(3, "0")} ${fmtTime(range[0])}-${fmtTime(range[1])}`;
     }
 
     async function postJson(url, body) {
@@ -203,9 +259,19 @@
         const button = document.createElement("button");
         button.type = "button";
         button.setAttribute("aria-current", Number(sheet.index) === state.chunkIndex ? "true" : "false");
-        button.textContent = `${String(sheet.index).padStart(3, "0")} ${fmtTime(start)}-${fmtTime(end)}  K${(sheet.keyframes || []).length}`;
+        const label = document.createElement("span");
+        label.textContent = `${String(sheet.index).padStart(3, "0")} ${fmtTime(start)}-${fmtTime(end)}  K${(sheet.keyframes || []).length}`;
+        button.append(label);
+        const noteCount = notesForChunk(sheet.index).length;
+        if (noteCount) {
+          const count = document.createElement("span");
+          count.className = "chunk-note-count";
+          count.textContent = `${noteCount} note${noteCount === 1 ? "" : "s"}`;
+          button.append(count);
+        }
         button.addEventListener("click", () => {
           state.chunkIndex = Number(sheet.index);
+          state.view = "chunk-notes";
           render();
         });
         chunks.append(button);
@@ -222,7 +288,81 @@
       }
     }
 
-    function renderNotes(sheet) {
+    function createNoteElement(note, options = {}) {
+      const node = document.createElement("article");
+      node.className = "note";
+
+      const header = document.createElement("div");
+      header.className = "note-header";
+      const metaWrap = document.createElement("div");
+      if (options.showChunk) {
+        const scope = document.createElement("div");
+        scope.className = "note-scope";
+        scope.textContent = noteChunkLabel(note);
+        metaWrap.append(scope);
+      }
+      const meta = document.createElement("div");
+      meta.className = "note-meta";
+      meta.textContent = `${note.id} ${note.author || "ai"} ${note.timecode || ""} ${note.kind || ""}`;
+      metaWrap.append(meta);
+      header.append(metaWrap);
+
+      if (options.showJump) {
+        const jump = document.createElement("button");
+        jump.type = "button";
+        jump.className = "note-jump";
+        jump.textContent = "Open";
+        jump.addEventListener("click", () => {
+          state.chunkIndex = Number(note.chunk_index);
+          state.view = "chunk-notes";
+          render();
+        });
+        header.append(jump);
+      }
+
+      const text = document.createElement("div");
+      text.className = "note-text";
+      text.textContent = note.text || "";
+      const replies = document.createElement("div");
+      replies.className = "replies";
+      for (const reply of note.replies || []) {
+        const replyNode = document.createElement("div");
+        replyNode.className = "reply";
+        const replyMeta = document.createElement("div");
+        replyMeta.className = "reply-meta";
+        replyMeta.textContent = `${reply.id} ${reply.author || ""}`;
+        const replyText = document.createElement("div");
+        replyText.className = "reply-text";
+        replyText.textContent = reply.text || "";
+        replyNode.append(replyMeta, replyText);
+        replies.append(replyNode);
+      }
+      const form = document.createElement("form");
+      const textarea = document.createElement("textarea");
+      textarea.placeholder = "reply";
+      const button = document.createElement("button");
+      button.type = "submit";
+      button.textContent = "Reply";
+      button.disabled = !notesBase;
+      form.append(textarea, button);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!notesBase) return;
+        await postJson(`${notesBase}/annotations/${encodeURIComponent(note.id)}/replies`, {
+          author: "user",
+          text: textarea.value,
+        });
+        textarea.value = "";
+        await loadAnnotations();
+        renderChunks();
+        renderPanel(currentSheet());
+        status("Saved");
+      });
+      node.append(header, text, replies, form);
+      return node;
+    }
+
+    function renderChunkNotes(sheet) {
       const wrap = document.querySelector("#notes");
       wrap.textContent = "";
       const notes = notesForChunk(sheet.index);
@@ -232,51 +372,46 @@
         empty.textContent = "No notes";
         wrap.append(empty);
       }
-      for (const note of notes) {
-        const node = document.createElement("article");
-        node.className = "note";
-        const meta = document.createElement("div");
-        meta.className = "note-meta";
-        meta.textContent = `${note.id} ${note.author || "ai"} ${note.timecode || ""} ${note.kind || ""}`;
-        const text = document.createElement("div");
-        text.className = "note-text";
-        text.textContent = note.text || "";
-        const replies = document.createElement("div");
-        replies.className = "replies";
-        for (const reply of note.replies || []) {
-          const replyNode = document.createElement("div");
-          replyNode.className = "reply";
-          const replyMeta = document.createElement("div");
-          replyMeta.className = "reply-meta";
-          replyMeta.textContent = `${reply.id} ${reply.author || ""}`;
-          const replyText = document.createElement("div");
-          replyText.className = "reply-text";
-          replyText.textContent = reply.text || "";
-          replyNode.append(replyMeta, replyText);
-          replies.append(replyNode);
-        }
-        const form = document.createElement("form");
-        const textarea = document.createElement("textarea");
-        textarea.placeholder = "reply";
-        const button = document.createElement("button");
-        button.type = "submit";
-        button.textContent = "Reply";
-        button.disabled = !notesBase;
-        form.append(textarea, button);
-        form.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          if (!notesBase) return;
-          await postJson(`${notesBase}/annotations/${encodeURIComponent(note.id)}/replies`, {
-            author: "user",
-            text: textarea.value,
-          });
-          textarea.value = "";
-          await loadAnnotations();
-          renderNotes(currentSheet());
-        });
-        node.append(meta, text, replies, form);
-        wrap.append(node);
+      for (const note of notes) wrap.append(createNoteElement(note));
+    }
+
+    function renderAllNotes() {
+      const wrap = document.querySelector("#notes");
+      wrap.textContent = "";
+      const notes = allNotes();
+      if (!notes.length) {
+        const empty = document.createElement("div");
+        empty.className = "note-meta";
+        empty.textContent = "No notes";
+        wrap.append(empty);
       }
+      for (const note of notes) wrap.append(createNoteElement(note, { showChunk: true, showJump: true }));
+    }
+
+    function updateNoteTabs() {
+      const chunkCount = notesForChunk(currentSheet().index).length;
+      const totalCount = allNotes().length;
+      const chunkTab = document.querySelector("#chunk-notes-tab");
+      const allTab = document.querySelector("#all-notes-tab");
+      chunkTab.textContent = `Chunk Notes${chunkCount ? ` (${chunkCount})` : ""}`;
+      allTab.textContent = `All Notes${totalCount ? ` (${totalCount})` : ""}`;
+      chunkTab.setAttribute("aria-current", state.view === "chunk-notes" ? "true" : "false");
+      allTab.setAttribute("aria-current", state.view === "all-notes" ? "true" : "false");
+      document.querySelector("#new-note").hidden = state.view !== "chunk-notes";
+    }
+
+    function renderPanel(sheet) {
+      updateNoteTabs();
+      if (state.view === "all-notes") renderAllNotes();
+      else renderChunkNotes(sheet);
+    }
+
+    function updateUrl() {
+      history.replaceState(null, "", `${location.pathname}?${new URLSearchParams({
+        ...(notesBase ? { notes: notesBase } : { manifest: manifestUrl }),
+        chunk: String(state.chunkIndex),
+        view: state.view,
+      })}`);
     }
 
     async function render() {
@@ -284,15 +419,25 @@
       const [start, end] = sheet.time_range || [0, 0];
       state.chunkIndex = Number(sheet.index);
       document.querySelector("#title").textContent = state.manifest.title || "film-matinee";
-      document.querySelector("#meta").textContent = `${String(sheet.index).padStart(3, "0")} ${fmtTime(start)}-${fmtTime(end)} / ${(state.manifest.sheets || []).length} chunks`;
+      const noteTotal = allNotes().length;
+      document.querySelector("#meta").textContent = `${String(sheet.index).padStart(3, "0")} ${fmtTime(start)}-${fmtTime(end)} / ${(state.manifest.sheets || []).length} chunks${noteTotal ? ` / ${noteTotal} notes` : ""}`;
       renderChunks();
-      renderNotes(sheet);
+      renderPanel(sheet);
       await renderStage(sheet);
-      history.replaceState(null, "", `${location.pathname}?${new URLSearchParams({
-        ...(notesBase ? { notes: notesBase } : { manifest: manifestUrl }),
-        chunk: String(state.chunkIndex),
-      })}`);
+      updateUrl();
     }
+
+    document.querySelector("#chunk-notes-tab").addEventListener("click", () => {
+      state.view = "chunk-notes";
+      renderPanel(currentSheet());
+      updateUrl();
+    });
+
+    document.querySelector("#all-notes-tab").addEventListener("click", () => {
+      state.view = "all-notes";
+      renderPanel(currentSheet());
+      updateUrl();
+    });
 
     document.querySelector("#new-note").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -310,7 +455,8 @@
       });
       document.querySelector("#note-text").value = "";
       await loadAnnotations();
-      renderNotes(currentSheet());
+      renderChunks();
+      renderPanel(currentSheet());
       status("Saved");
     });
 
@@ -322,7 +468,8 @@
         status(notesBase ? "Live annotations" : "Read-only annotations");
         setInterval(async () => {
           await loadAnnotations();
-          renderNotes(currentSheet());
+          renderChunks();
+          renderPanel(currentSheet());
         }, 2500);
       } catch (error) {
         console.error(error);
