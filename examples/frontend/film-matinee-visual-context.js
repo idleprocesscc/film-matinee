@@ -1,4 +1,4 @@
-// Film-matinee visual context helper for clove-cinema.
+// Film-matinee visual context helper for film-matinee.
 //
 // Builds an image-first "film-matinee sheet" for the current playback window:
 // keyframes + color bands + short subtitle anchors, plus a plain-text
@@ -6,7 +6,7 @@
 // player by using a detached video element.
 
 const DEFAULTS = {
-  baseUrl: "/cinema",
+  baseUrl: "/film-matinee",
   windowSec: 90,
   minSheetSec: 60,
   maxSheetSec: 600,
@@ -45,7 +45,7 @@ function clamp(value, min, max) {
 }
 
 function stripBaseUrl(baseUrl) {
-  return String(baseUrl || "/cinema").replace(/\/+$/, "");
+  return String(baseUrl || "/film-matinee").replace(/\/+$/, "");
 }
 
 function fmtTime(seconds) {
@@ -1004,7 +1004,7 @@ function chooseAdaptiveEnd(from, candidateTo, selections, options) {
   return clamp(Number(aligned.toFixed(3)), minEnd, candidateTo);
 }
 
-export function createCinemaVisualContext(cinemaPlayer, initOptions = {}) {
+export function createFilmMatineeVisualContext(filmMatineePlayer, initOptions = {}) {
   const options = { ...DEFAULTS, ...initOptions };
   options.baseUrl = stripBaseUrl(options.baseUrl);
   const cache = new Map();
@@ -1013,7 +1013,7 @@ export function createCinemaVisualContext(cinemaPlayer, initOptions = {}) {
     const opts = { ...options, ...buildOptions };
     opts.baseUrl = stripBaseUrl(opts.baseUrl);
 
-    const st = opts.status || cinemaPlayer.status();
+    const st = opts.status || filmMatineePlayer.status();
     if (!st?.id) return null;
 
     const currentTime = Number(opts.currentTime ?? st.ts ?? 0);
@@ -1078,7 +1078,7 @@ export function createCinemaVisualContext(cinemaPlayer, initOptions = {}) {
     const opts = { ...options, ...buildOptions };
     opts.baseUrl = stripBaseUrl(opts.baseUrl);
 
-    const st = opts.status || cinemaPlayer.status();
+    const st = opts.status || filmMatineePlayer.status();
     if (!st?.id) return null;
 
     const currentTime = Number(opts.currentTime ?? st.ts ?? 0);
@@ -1188,7 +1188,7 @@ export function createCinemaVisualContext(cinemaPlayer, initOptions = {}) {
   }
 
   async function collect(buildOptions = {}) {
-    const st = cinemaPlayer.status();
+    const st = filmMatineePlayer.status();
     if (!st?.id) return { textPrefix: "", images: [], visual: null };
 
     const useAdaptive = Boolean(buildOptions.adaptive ?? options.adaptive);
@@ -1210,7 +1210,7 @@ export function createCinemaVisualContext(cinemaPlayer, initOptions = {}) {
     }
 
     if (buildOptions.includeCurrentFrame ?? options.includeCurrentFrame) {
-      const currentFrame = cinemaPlayer.snapshot?.({
+      const currentFrame = filmMatineePlayer.snapshot?.({
         width: options.currentFrameWidth,
         quality: options.jpegQuality,
       });
@@ -1234,5 +1234,3 @@ export function createCinemaVisualContext(cinemaPlayer, initOptions = {}) {
     },
   };
 }
-
-export const createFilmMatineeVisualContext = createCinemaVisualContext;

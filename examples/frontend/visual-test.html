@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>film-matinee visual context test</title>
-  <link rel="stylesheet" href="./cinema-player.css">
+  <link rel="stylesheet" href="./film-matinee-player.css">
   <style>
     :root {
       color-scheme: dark;
@@ -63,11 +63,11 @@
     <pre id="sidecar"></pre>
   </main>
   <script type="module">
-    import { cinemaPlayer } from './cinema-player.js';
-    import { createCinemaVisualContext } from './cinema-visual-context.js';
+    import { filmMatineePlayer } from './film-matinee-player.js';
+    import { createFilmMatineeVisualContext } from './film-matinee-visual-context.js';
 
     const params = new URLSearchParams(window.location.search);
-    const baseUrl = params.get('cinema') || 'http://127.0.0.1:8770/cinema';
+    const baseUrl = params.get('base') || params.get('server') || 'http://127.0.0.1:8770/film-matinee';
     const mode = params.get('mode') || 'adaptive';
     const film = {
       id: params.get('film') || 'Sintel Trailer (2010)',
@@ -75,8 +75,8 @@
       ts: 52,
     };
 
-    cinemaPlayer.init({ baseUrl });
-    const cinemaVisual = createCinemaVisualContext(cinemaPlayer, {
+    filmMatineePlayer.init({ baseUrl });
+    const filmMatineeVisual = createFilmMatineeVisualContext(filmMatineePlayer, {
       baseUrl,
       windowSec: 52,
       minSheetSec: 20,
@@ -112,14 +112,14 @@
           to: 52,
         };
         const visual = mode === 'window'
-          ? await cinemaVisual.buildWindowSheet(buildRequest)
-          : await cinemaVisual.buildAdaptiveSheet(buildRequest);
+          ? await filmMatineeVisual.buildWindowSheet(buildRequest)
+          : await filmMatineeVisual.buildAdaptiveSheet(buildRequest);
         sheet.src = visual.sheet.dataUrl;
         sidecar.textContent = visual.sidecar;
         const range = visual.timeRange.map((time) => time.toFixed(1)).join('-');
         const next = visual.nextFrom === null ? 'done' : visual.nextFrom.toFixed(1);
         status.textContent = `Built ${visual.mode} ${range}s: ${visual.keyframes.length} keyframes, ${visual.samples.length} color samples, ${visual.subtitles.length} subtitle cues, next ${next}.`;
-        window.__lastCinemaVisual = visual;
+        window.__lastFilmMatineeVisual = visual;
         const postUrl = params.get('post');
         if (postUrl) {
           await fetch(postUrl, {

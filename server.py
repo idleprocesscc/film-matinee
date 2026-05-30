@@ -1,18 +1,18 @@
-"""clove-cinema — 极简放映室后端：扫目录 + Range 视频流 + SRT 字幕同步。
+"""film-matinee local film server: directory scan + Range streaming + SRT sync.
 
 设计原则：不上传、不抽帧、不碰 ffmpeg。把电影 + 字幕丢在
-CLOVE_CINEMA_ROOT/<片名>/ 下就出现在片库，没有"导入"这一步。
+FILM_MATINEE_ROOT/<片名>/ 下就出现在片库，没有"导入"这一步。
 
 截图（给 AI 看当前帧）由前端 canvas 在发消息时实时抓，
 后端不参与抓帧 —— 因为后端是个无头进程，看不到浏览器画面。
 
 启动:
-  python server.py                          # 默认 :8770，根目录 ~/cinema
+  python server.py                          # 默认 :8770，根目录 ~/film-matinee
   python server.py --port 8800 --root /data/films
-  CLOVE_CINEMA_ROOT=/data/films python server.py
+  FILM_MATINEE_ROOT=/data/films python server.py
 
 嵌入到已有 aiohttp 应用:
-  from clove_cinema_server import setup_routes
+  from film_matinee_server import setup_routes
   setup_routes(app, root=Path("/data/films"))
 """
 
@@ -24,7 +24,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-DEFAULT_ROOT = Path.home() / "cinema"
+DEFAULT_ROOT = Path.home() / "film-matinee"
 STREAM_CHUNK = 1024 * 1024  # 1MB 一块推流
 
 VIDEO_EXTS = (".mp4", ".m4v", ".webm", ".mov", ".mkv")
@@ -261,10 +261,10 @@ def _make_handlers(root: Path, allow_origin: str):
 
 
 def setup_routes(app: web.Application, *, root: Path = DEFAULT_ROOT,
-                 prefix: str = "/cinema", allow_origin: str = ""):
-    """把 cinema 路由挂到一个已存在的 aiohttp app 上。
+                 prefix: str = "/film-matinee", allow_origin: str = ""):
+    """把 film-matinee 路由挂到一个已存在的 aiohttp app 上。
 
-    prefix      路由前缀，默认 /cinema
+    prefix      路由前缀，默认 /film-matinee
     allow_origin  CORS 头值（"*" 或具体 origin），默认空 = 不发 CORS 头（同源）
     """
     root.mkdir(parents=True, exist_ok=True)
@@ -280,25 +280,25 @@ def setup_routes(app: web.Application, *, root: Path = DEFAULT_ROOT,
 
 
 def main():
-    p = argparse.ArgumentParser(description="clove-cinema — 极简放映室后端")
+    p = argparse.ArgumentParser(description="film-matinee — local film streaming backend")
     p.add_argument("--port", type=int,
-                   default=int(os.environ.get("CLOVE_CINEMA_PORT", "8770")))
-    p.add_argument("--bind", default=os.environ.get("CLOVE_CINEMA_BIND", "127.0.0.1"),
+                   default=int(os.environ.get("FILM_MATINEE_PORT", "8770")))
+    p.add_argument("--bind", default=os.environ.get("FILM_MATINEE_BIND", "127.0.0.1"),
                    help="监听地址，默认 127.0.0.1（仅本机）。VPS 上反代用就保持默认，"
                         "想直接对外暴露设 0.0.0.0")
     p.add_argument("--root", type=Path,
-                   default=Path(os.environ.get("CLOVE_CINEMA_ROOT", str(DEFAULT_ROOT))),
+                   default=Path(os.environ.get("FILM_MATINEE_ROOT", str(DEFAULT_ROOT))),
                    help=f"视频根目录，默认 {DEFAULT_ROOT}")
-    p.add_argument("--prefix", default=os.environ.get("CLOVE_CINEMA_PREFIX", "/cinema"),
-                   help="路由前缀，默认 /cinema")
-    p.add_argument("--allow-origin", default=os.environ.get("CLOVE_CINEMA_ALLOW_ORIGIN", ""),
+    p.add_argument("--prefix", default=os.environ.get("FILM_MATINEE_PREFIX", "/film-matinee"),
+                   help="路由前缀，默认 /film-matinee")
+    p.add_argument("--allow-origin", default=os.environ.get("FILM_MATINEE_ALLOW_ORIGIN", ""),
                    help="CORS Access-Control-Allow-Origin 头，前端跟后端不同源时配。"
                         "例：--allow-origin https://your.site 或 --allow-origin '*'")
     args = p.parse_args()
 
     app = web.Application()
     setup_routes(app, root=args.root, prefix=args.prefix, allow_origin=args.allow_origin)
-    print(f"[clove-cinema] root={args.root} prefix={args.prefix} bind={args.bind}:{args.port} "
+    print(f"[film-matinee] root={args.root} prefix={args.prefix} bind={args.bind}:{args.port} "
           f"allow_origin={args.allow_origin!r}", flush=True)
     web.run_app(app, host=args.bind, port=args.port, print=None)
 

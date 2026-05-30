@@ -1,5 +1,5 @@
-/* clove-cinema 浮窗 — 参考样式。配色中性偏暗，朋友按需改。 */
-#clove-cinema {
+/* film-matinee 浮窗 — 参考样式。配色中性偏暗，朋友按需改。 */
+#film-matinee-player {
   position: fixed;
   right: 24px;
   bottom: 24px;
@@ -15,14 +15,14 @@
   overflow: hidden;
   user-select: none;
 }
-#clove-cinema.cc-mini {
+#film-matinee-player.fm-mini {
   height: 36px !important;
   width: 220px !important;
 }
-#clove-cinema.cc-mini video,
-#clove-cinema.cc-mini .cc-resize { display: none; }
+#film-matinee-player.fm-mini video,
+#film-matinee-player.fm-mini .fm-resize { display: none; }
 
-.cc-bar {
+.fm-bar {
   height: 28px;
   display: flex;
   align-items: center;
@@ -34,14 +34,14 @@
   touch-action: none;
   flex: 0 0 auto;
 }
-.cc-bar:active { cursor: grabbing; }
-.cc-title {
+.fm-bar:active { cursor: grabbing; }
+.fm-title {
   flex: 1 1 auto;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.cc-btn {
+.fm-btn {
   width: 22px; height: 22px;
   border: none; background: transparent;
   color: #B8B0C0; cursor: pointer;
@@ -50,10 +50,10 @@
   border-radius: 4px;
   flex: 0 0 auto;
 }
-.cc-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
-.cc-close { font-size: 18px; }
+.fm-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.fm-close { font-size: 18px; }
 
-#clove-cinema video {
+#film-matinee-player video {
   flex: 1 1 auto;
   width: 100%;
   height: calc(100% - 28px);
@@ -61,7 +61,7 @@
   object-fit: contain;
 }
 
-.cc-resize {
+.fm-resize {
   position: absolute;
   right: 0; bottom: 0;
   width: 16px; height: 16px;

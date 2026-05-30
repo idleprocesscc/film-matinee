@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compatibility entrypoint for the film-matinee sheet generator."""
 
-from generate_cinema_sheets import main
+from generate_film_matinee_core import main
 
 
 if __name__ == "__main__":

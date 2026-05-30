@@ -1,23 +1,23 @@
-// clove-cinema 浮窗播放器 — 参考实现
+// film-matinee 浮窗播放器 — 参考实现
 //
 // 设计：挂在 body 上的全局浮动 <video>，跨页面/路由不销毁。
 // 可拖拽、可缩放、可最小化、可关闭。位置/大小 localStorage 持久化。
 //
 // 关键 API（给"聊天前端"调用）：
-//   cinemaPlayer.init({ baseUrl })         初始化（一次性）
-//   cinemaPlayer.open(id, title)           开始播放
-//   cinemaPlayer.close()                   关闭并清 src
-//   cinemaPlayer.status()                  → {id, title, ts} | null
-//   cinemaPlayer.snapshot({ width, quality }) → "data:image/jpeg;base64,..." | null
-//   cinemaPlayer.subscribe(fn)             订阅状态变化（可选）
+//   filmMatineePlayer.init({ baseUrl })         初始化（一次性）
+//   filmMatineePlayer.open(id, title)           开始播放
+//   filmMatineePlayer.close()                   关闭并清 src
+//   filmMatineePlayer.status()                  → {id, title, ts} | null
+//   filmMatineePlayer.snapshot({ width, quality }) → "data:image/jpeg;base64,..." | null
+//   filmMatineePlayer.subscribe(fn)             订阅状态变化（可选）
 //
 // 朋友把这个文件丢进自己的 shell，按需改样式 / 改交互即可。
 // 跟你自己的 chat 前端集成的细节见 examples/INTEGRATION.md。
 
-const POS_KEY = 'clove-cinema:pos';
-const SIZE_KEY = 'clove-cinema:size';
+const POS_KEY = 'film-matinee:pos';
+const SIZE_KEY = 'film-matinee:size';
 
-let baseUrl = '/cinema';
+let baseUrl = '/film-matinee';
 let wrap = null;
 let videoEl = null;
 let dragging = false, offX = 0, offY = 0;
@@ -35,18 +35,18 @@ function saveSize(w, h) { localStorage.setItem(SIZE_KEY, JSON.stringify({ w, h }
 function ensureDom() {
   if (wrap) return;
   wrap = document.createElement('div');
-  wrap.id = 'clove-cinema';
+  wrap.id = 'film-matinee-player';
   wrap.innerHTML = `
-    <div class="cc-bar">
-      <span class="cc-title" id="cc-title"></span>
-      <button class="cc-btn cc-min" title="最小化">—</button>
-      <button class="cc-btn cc-close" title="关闭">×</button>
+    <div class="fm-bar">
+      <span class="fm-title" id="fm-title"></span>
+      <button class="fm-btn fm-min" title="最小化">—</button>
+      <button class="fm-btn fm-close" title="关闭">×</button>
     </div>
-    <video id="clove-cinema-video" playsinline controls preload="metadata"></video>
-    <div class="cc-resize" title="拖拽改变大小"></div>
+    <video id="film-matinee-video" playsinline controls preload="metadata"></video>
+    <div class="fm-resize" title="拖拽改变大小"></div>
   `;
   document.body.appendChild(wrap);
-  videoEl = wrap.querySelector('#clove-cinema-video');
+  videoEl = wrap.querySelector('#film-matinee-video');
 }
 
 function applySavedGeom() {
@@ -61,7 +61,7 @@ function applySavedGeom() {
 }
 
 function setupDrag() {
-  const bar = wrap.querySelector('.cc-bar');
+  const bar = wrap.querySelector('.fm-bar');
   bar.addEventListener('pointerdown', (e) => {
     if (e.target.closest('button')) return;
     dragging = true;
@@ -88,7 +88,7 @@ function setupDrag() {
 }
 
 function setupResize() {
-  const handle = wrap.querySelector('.cc-resize');
+  const handle = wrap.querySelector('.fm-resize');
   handle.addEventListener('pointerdown', (e) => {
     resizing = true;
     handle.setPointerCapture(e.pointerId);
@@ -111,8 +111,8 @@ function setupResize() {
 }
 
 function setupButtons() {
-  wrap.querySelector('.cc-min').onclick = () => wrap.classList.toggle('cc-mini');
-  wrap.querySelector('.cc-close').onclick = () => cinemaPlayer.close();
+  wrap.querySelector('.fm-min').onclick = () => wrap.classList.toggle('fm-mini');
+  wrap.querySelector('.fm-close').onclick = () => filmMatineePlayer.close();
 }
 
 function setupVideo() {
@@ -121,7 +121,7 @@ function setupVideo() {
   videoEl.addEventListener('timeupdate', () => { _state.ts = videoEl.currentTime; notify(); });
 }
 
-export const cinemaPlayer = {
+export const filmMatineePlayer = {
   init(opts) {
     if (opts?.baseUrl) baseUrl = opts.baseUrl.replace(/\/+$/, '');
     ensureDom();
@@ -134,14 +134,14 @@ export const cinemaPlayer = {
   },
   open(id, title) {
     ensureDom();
-    wrap.querySelector('#cc-title').textContent = title || id;
+    wrap.querySelector('#fm-title').textContent = title || id;
     const newSrc = `${baseUrl}/stream/${encodeURIComponent(id)}`;
     if (videoEl.dataset.cinId !== id) {
       videoEl.src = newSrc;
       videoEl.dataset.cinId = id;
     }
     wrap.style.display = 'flex';
-    wrap.classList.remove('cc-mini');
+    wrap.classList.remove('fm-mini');
     _state = { id, title: title || id, ts: 0, playing: false };
     notify();
     videoEl.play().catch(() => {});
@@ -171,7 +171,7 @@ export const cinemaPlayer = {
     canvas.height = Math.round(canvas.width / (ratio || 16 / 9));
     canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
     try { return canvas.toDataURL('image/jpeg', Number(opts.quality) || 0.7); }
-    catch (e) { console.warn('[clove-cinema] snapshot failed', e); return null; }
+    catch (e) { console.warn('[film-matinee] snapshot failed', e); return null; }
   },
   subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
 };

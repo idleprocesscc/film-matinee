@@ -86,7 +86,7 @@ def _slug(value: str) -> str:
 
 
 def _default_out_dir(video_path: Path) -> Path:
-    return Path.cwd() / ".cinema-cache" / _slug(video_path.stem)
+    return Path.cwd() / ".film-matinee-cache" / _slug(video_path.stem)
 
 
 def _normalize_layout(layout: str) -> str:
@@ -754,37 +754,6 @@ def film_notes(manifest_path: str, chunk_index: int | None = None) -> str:
         for reply in note.get("replies", []):
             lines.append(f"  {reply.get('id')} {reply.get('author')}: {reply.get('text')}")
     return "\n".join(lines)
-
-
-# Backward-compatible aliases while the project migrates from "cinema" wording.
-@mcp.tool()
-def cinema_overview(manifest_path: str) -> str:
-    """Deprecated alias for film_overview."""
-    return film_overview(manifest_path)
-
-
-@mcp.tool()
-def cinema_start(manifest_path: str, start_index: int = 0) -> list[Any]:
-    """Deprecated alias for film_start."""
-    return film_start(manifest_path, start_index)
-
-
-@mcp.tool()
-def cinema_next(manifest_path: str) -> list[Any]:
-    """Deprecated alias for film_next."""
-    return film_next(manifest_path)
-
-
-@mcp.tool()
-def cinema_chunk(manifest_path: str, index: int, advance_cursor: bool = False) -> list[Any]:
-    """Deprecated alias for film_chunk."""
-    return film_chunk(manifest_path, index, advance_cursor)
-
-
-@mcp.tool()
-def cinema_locate(manifest_path: str, timecode: str = "", text: str = "", set_cursor: bool = False) -> str:
-    """Deprecated alias for film_locate."""
-    return film_locate(manifest_path, timecode, text, set_cursor)
 
 
 if __name__ == "__main__":

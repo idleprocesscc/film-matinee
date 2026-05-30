@@ -33,7 +33,7 @@ python3 tools/generate_film_matinee_sheets.py \
   --title "Movie Title" \
   --layout 5x4 \
   --target-keyframes 18 \
-  --out-dir .cinema-cache/movie-title \
+  --out-dir .film-matinee-cache/movie-title \
   --max-sheets 0
 ```
 
@@ -41,7 +41,7 @@ python3 tools/generate_film_matinee_sheets.py \
 
 ```bash
 python3 tools/film_matinee_notes_server.py \
-  --manifest .cinema-cache/movie-title/manifest.json \
+  --manifest .film-matinee-cache/movie-title/manifest.json \
   --port 8792
 ```
 
@@ -85,9 +85,9 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 
 多部电影互不影响：每部电影生成到一个独立 `out_dir`，里面有自己的 `manifest.json`、`.film-matinee-state.json` 和 `annotations.json`。Claude 读哪部电影，就把那部电影的 `manifest.json` 传给 `film_start` / `film_next`。
 
-## Local Cinema Server
+## Local Film Server
 
-下面这部分保留了 `clove-cinema` 风格的本地放映室后端：扫目录列片、HTTP Range 流、SRT 字幕按区间增量返回。
+下面这部分是本地放映后端：扫目录列片、HTTP Range 流、SRT 字幕按区间增量返回。
 
 ## 适用场景
 
@@ -109,7 +109,7 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 
 ```bash
 python server.py
-# → 监听 127.0.0.1:8770，扫 ~/cinema/
+# → 监听 127.0.0.1:8770，扫 ~/film-matinee/
 ```
 
 带参数：
@@ -121,23 +121,23 @@ python server.py --port 8800 --root /data/films --bind 0.0.0.0
 环境变量等价：
 
 ```bash
-CLOVE_CINEMA_PORT=8800
-CLOVE_CINEMA_BIND=0.0.0.0
-CLOVE_CINEMA_ROOT=/data/films
-CLOVE_CINEMA_PREFIX=/cinema           # 路由前缀，默认 /cinema
-CLOVE_CINEMA_ALLOW_ORIGIN=https://your.site  # 跨域时设；同源不用
+FILM_MATINEE_PORT=8800
+FILM_MATINEE_BIND=0.0.0.0
+FILM_MATINEE_ROOT=/data/films
+FILM_MATINEE_PREFIX=/film-matinee           # 路由前缀，默认 /film-matinee
+FILM_MATINEE_ALLOW_ORIGIN=https://your.site  # 跨域时设；同源不用
 ```
 
 部署模板见 `examples/`：
-- `launchd.com.clove-cinema.plist.example` — Mac mini
-- `systemd-clove-cinema.service.example` — Linux/VPS
+- `launchd.com.film-matinee.plist.example` — Mac mini
+- `systemd-film-matinee.service.example` — Linux/VPS
 
 ## 放片
 
-在 `--root`（默认 `~/cinema/`）下建文件夹，名字 = 片名 = id。文件夹内丢视频和字幕：
+在 `--root`（默认 `~/film-matinee/`）下建文件夹，名字 = 片名 = id。文件夹内丢视频和字幕：
 
 ```
-~/cinema/
+~/film-matinee/
 ├── 源代码（2011）/
 │   ├── source-code.mp4         # 任意文件名，取扫到的第一个视频
 │   └── source-code.zh.srt      # 任意文件名，取第一个 .srt（可无字幕）
@@ -153,11 +153,11 @@ CLOVE_CINEMA_ALLOW_ORIGIN=https://your.site  # 跨域时设；同源不用
 
 | 路由 | 用途 | 返回 |
 |---|---|---|
-| `GET  /cinema/list` | 列片库 | `{films: [{id, title, video_size, has_subtitle, subtitle_count, duration, ...}]}` |
-| `GET  /cinema/{id}/meta` | 单片元数据 | 同上单条 |
-| `GET  /cinema/sync/{id}?from=&to=` | 拿 `[from, to]` 区间相交的字幕 | `{subtitles: [{start, end, text}]}` |
-| `GET  /cinema/stream/{id}` | 视频流（认真支持 Range） | 206 / 200 / 416 |
-| `HEAD /cinema/stream/{id}` | 拿总长 | 头里 `Content-Length` + `Accept-Ranges: bytes` |
+| `GET  /film-matinee/list` | 列片库 | `{films: [{id, title, video_size, has_subtitle, subtitle_count, duration, ...}]}` |
+| `GET  /film-matinee/{id}/meta` | 单片元数据 | 同上单条 |
+| `GET  /film-matinee/sync/{id}?from=&to=` | 拿 `[from, to]` 区间相交的字幕 | `{subtitles: [{start, end, text}]}` |
+| `GET  /film-matinee/stream/{id}` | 视频流（认真支持 Range） | 206 / 200 / 416 |
+| `HEAD /film-matinee/stream/{id}` | 拿总长 | 头里 `Content-Length` + `Accept-Ranges: bytes` |
 
 `{id}` 是文件夹名（URL 编码）。`from` / `to` 是秒（浮点）。
 
@@ -180,15 +180,15 @@ python server.py --allow-origin https://your.site
 
 参考实现在 `examples/frontend/`：
 
-- `cinema-player.js` — 浮窗播放器（拖拽 / 缩放 / 最小化 / 持久化位置 / `snapshot()` API）
-- `cinema-player.css` — 样式
-- `cinema-visual-context.js` — film-matinee sheet 原型：关键帧 + 色带 + 字幕 sidecar
+- `film-matinee-player.js` — 浮窗播放器（拖拽 / 缩放 / 最小化 / 持久化位置 / `snapshot()` API）
+- `film-matinee-player.css` — 样式
+- `film-matinee-visual-context.js` — film-matinee sheet 原型：关键帧 + 色带 + 字幕 sidecar
 
 集成的 4 步（详见 `examples/INTEGRATION.md`）：
 
-1. **挂浮窗**：app 启动时调 `cinemaPlayer.init({ baseUrl: '/cinema' })`，浮窗就挂上了
-2. **片库页**：`GET /cinema/list` 拿片列表，点开调 `cinemaPlayer.open(id, title)`
-3. **发消息前**：调 `cinemaPlayer.status()` 拿当前 ts，`fetch('/cinema/sync/{id}?from=lastTs&to=curTs')` 拿增量字幕，`cinemaPlayer.snapshot()` 拿当前帧
+1. **挂浮窗**：app 启动时调 `filmMatineePlayer.init({ baseUrl: '/film-matinee' })`，浮窗就挂上了
+2. **片库页**：`GET /film-matinee/list` 拿片列表，点开调 `filmMatineePlayer.open(id, title)`
+3. **发消息前**：调 `filmMatineePlayer.status()` 拿当前 ts，`fetch('/film-matinee/sync/{id}?from=lastTs&to=curTs')` 拿增量字幕，`filmMatineePlayer.snapshot()` 拿当前帧
 4. **拼进 chat payload**：字幕放 text 前缀，截图 dataURL 拆成 `{media_type, data}` 加进 images 数组
 
 如果要保留更多镜头语言，看 `examples/FILM_MATINEE.md` 和 `examples/VISUAL_CONTEXT.md`。`film-matinee` 是现在的 AI 线性读片工作流：批量生成视觉 sheet + 字幕 sidecar，并通过 MCP 一节一节读；旧的前端原型仍可用隐藏 video 抽取当前窗口。
@@ -199,12 +199,12 @@ python server.py --allow-origin https://your.site
 
 ```python
 from aiohttp import web
-from server import setup_routes  # 或 from clove_cinema_server import setup_routes
+from server import setup_routes  # 或 from film_matinee_server import setup_routes
 from pathlib import Path
 
 app = web.Application()
 # ... 你自己的路由 ...
-setup_routes(app, root=Path.home() / "cinema", prefix="/cinema")
+setup_routes(app, root=Path.home() / "film-matinee", prefix="/film-matinee")
 web.run_app(app)
 ```
 
@@ -228,7 +228,7 @@ iconv -f GBK -t UTF-8 input.srt > output.srt
 
 MIT
 
-The local cinema server portions include code adapted from [Echoes0302/clove-cinema](https://github.com/Echoes0302/clove-cinema), which states MIT licensing in its README. See [NOTICE](NOTICE) for attribution.
+The local film server portions include code adapted from [Echoes0302/clove-cinema](https://github.com/Echoes0302/clove-cinema), which states MIT licensing in its README. See [NOTICE](NOTICE) for attribution.
 
 ## Contributors
 

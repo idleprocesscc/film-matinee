@@ -16,7 +16,7 @@ python3 tools/generate_film_matinee_sheets.py \
   --sample-step-sec 1 \
   --subtitle-style-include '^(Text - CN|Default)' \
   --subtitle-style-exclude 'JP|Ruby' \
-  --out-dir .cinema-cache/look-back-2024-film-matinee \
+  --out-dir .film-matinee-cache/look-back-2024-film-matinee \
   --max-sheets 0
 ```
 
@@ -30,7 +30,7 @@ python3 tools/generate_film_matinee_sheets.py \
     "film-matinee": {
       "command": "python3",
       "args": [
-        "/Users/koshijia/Documents/New project/clove-cinema/tools/film_matinee_reader_mcp.py"
+        "/path/to/film-matinee/tools/film_matinee_reader_mcp.py"
       ]
     }
   }
@@ -68,7 +68,7 @@ python3 tools/generate_film_matinee_sheets.py \
 用 film_generate 处理这部电影：
 video_path=/path/to/movie.mkv
 subtitle_path=/path/to/subtitles.ass
-out_dir=.cinema-cache/movie-title
+out_dir=.film-matinee-cache/movie-title
 layout=5x4
 subtitle_offset_sec=-29.5
 ```
@@ -76,9 +76,9 @@ subtitle_offset_sec=-29.5
 然后让它调用：
 
 ```text
-film_generate_status(".cinema-cache/movie-title")
-film_overview(".cinema-cache/movie-title/manifest.json")
-film_start(".cinema-cache/movie-title/manifest.json")
+film_generate_status(".film-matinee-cache/movie-title")
+film_overview(".film-matinee-cache/movie-title/manifest.json")
+film_start(".film-matinee-cache/movie-title/manifest.json")
 ```
 
 多部电影不会串台：每部电影一个 `out_dir`，游标状态和批注都存在这个目录里。导入新片时换一个新的 `out_dir` 即可。
@@ -89,7 +89,7 @@ MCP 写入的批注在输出目录的 `annotations.json`。可以启动一个本
 
 ```bash
 python3 tools/film_matinee_notes_server.py \
-  --manifest .cinema-cache/look-back-2024-film-matinee/manifest.json \
+  --manifest .film-matinee-cache/look-back-2024-film-matinee/manifest.json \
   --port 8792
 ```
 

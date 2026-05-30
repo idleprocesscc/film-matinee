@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline film-matinee sheet generator.
 
-This is the batch counterpart to examples/frontend/cinema-visual-context.js.
+This is the batch counterpart to examples/frontend/film-matinee-visual-context.js.
 It uses ffmpeg/ffprobe for decoding, then writes:
 
   manifest.json
