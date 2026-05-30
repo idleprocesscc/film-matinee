@@ -140,12 +140,12 @@ async def _send_file_range(resp: web.StreamResponse, path: Path, start: int, len
                 break
             try:
                 await resp.write(data)
-            except ConnectionResetError:
+            except (ConnectionResetError, ConnectionError, BrokenPipeError):
                 return  # 客户端断开（seek/换片），静默退出
             remaining -= len(data)
     try:
         await resp.write_eof()
-    except ConnectionResetError:
+    except (ConnectionResetError, ConnectionError, BrokenPipeError):
         pass
 
 

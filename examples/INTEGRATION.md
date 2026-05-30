@@ -86,6 +86,11 @@ async function renderCinemaPage(root) {
 这是核心。每次你的聊天前端要发消息给 AI 时，**在调 chat API 前**先调一次
 `collectCinemaContext()`，把当前帧 + 增量字幕拼上。
 
+如果要实验“关键帧 + 色带 + 字幕 sidecar”的 cinema sheet，不要改下面这段旧版函数。
+直接看 `examples/VISUAL_CONTEXT.md`，用 `cinema-visual-context.js` 里的
+`cinemaVisual.collect()`。它会返回一张 `cinema-sheet` 图片和完整字幕 sidecar，
+适合需要保留镜头语言的片段。
+
 ### 增量字幕的语义
 
 回拖时不要重复给 AI 看过的字幕。维护一个"已注入高水位" Map：

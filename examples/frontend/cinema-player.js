@@ -8,7 +8,7 @@
 //   cinemaPlayer.open(id, title)           开始播放
 //   cinemaPlayer.close()                   关闭并清 src
 //   cinemaPlayer.status()                  → {id, title, ts} | null
-//   cinemaPlayer.snapshot()                → "data:image/jpeg;base64,..." | null
+//   cinemaPlayer.snapshot({ width, quality }) → "data:image/jpeg;base64,..." | null
 //   cinemaPlayer.subscribe(fn)             订阅状态变化（可选）
 //
 // 朋友把这个文件丢进自己的 shell，按需改样式 / 改交互即可。
@@ -162,14 +162,15 @@ export const cinemaPlayer = {
   },
   // 抓当前帧 → JPEG dataURL。video 没就绪/没在播返 null。
   // 用于：发消息给 AI 前抓一帧塞进 images 数组。
-  snapshot() {
+  snapshot(opts = {}) {
     if (!videoEl || !videoEl.dataset.cinId || videoEl.readyState < 2) return null;
     const canvas = document.createElement('canvas');
     const ratio = videoEl.videoWidth / (videoEl.videoHeight || 1);
-    canvas.width = Math.min(640, videoEl.videoWidth || 640);
+    const targetWidth = Number(opts.width) || 640;
+    canvas.width = Math.min(targetWidth, videoEl.videoWidth || targetWidth);
     canvas.height = Math.round(canvas.width / (ratio || 16 / 9));
     canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-    try { return canvas.toDataURL('image/jpeg', 0.7); }
+    try { return canvas.toDataURL('image/jpeg', Number(opts.quality) || 0.7); }
     catch (e) { console.warn('[clove-cinema] snapshot failed', e); return null; }
   },
   subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },

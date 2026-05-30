@@ -18,3 +18,19 @@ __pycache__/
 
 # 本地实测文件夹（用户自己的电影）
 cinema/
+
+# film-matinee generated/private media artifacts
+.cinema-cache/
+.film-matinee-cache/
+annotations.json
+*.mp4
+*.m4v
+*.mkv
+*.mov
+*.webm
+*.srt
+*.ass
+*.vtt
+sintel-sheet-*.png
+look-back-*.png
+film-matinee-*.png

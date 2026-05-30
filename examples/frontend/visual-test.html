@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>film-matinee visual context test</title>
+  <link rel="stylesheet" href="./cinema-player.css">
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #111;
+      color: #f3f0e8;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #111;
+    }
+    main {
+      max-width: 1680px;
+      margin: 0 auto;
+    }
+    button {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: #252525;
+      color: #f3f0e8;
+      border-radius: 6px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { background: #303030; }
+    #status {
+      margin: 16px 0;
+      color: rgba(243,240,232,0.72);
+      min-height: 24px;
+    }
+    #sheet {
+      display: block;
+      width: min(100%, 1600px);
+      border: 1px solid rgba(255,255,255,0.16);
+      background: #050505;
+    }
+    pre {
+      white-space: pre-wrap;
+      background: #181818;
+      border: 1px solid rgba(255,255,255,0.12);
+      padding: 12px;
+      border-radius: 6px;
+      max-width: 900px;
+      color: #d8d0c8;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Sintel Trailer film-matinee sheet</h1>
+    <button id="build">Build sheet</button>
+    <div id="status">Ready.</div>
+    <img id="sheet" alt="Generated film-matinee sheet">
+    <pre id="sidecar"></pre>
+  </main>
+  <script type="module">
+    import { cinemaPlayer } from './cinema-player.js';
+    import { createCinemaVisualContext } from './cinema-visual-context.js';
+
+    const params = new URLSearchParams(window.location.search);
+    const baseUrl = params.get('cinema') || 'http://127.0.0.1:8770/cinema';
+    const mode = params.get('mode') || 'adaptive';
+    const film = {
+      id: params.get('film') || 'Sintel Trailer (2010)',
+      title: params.get('title') || params.get('film') || 'Sintel Trailer (2010)',
+      ts: 52,
+    };
+
+    cinemaPlayer.init({ baseUrl });
+    const cinemaVisual = createCinemaVisualContext(cinemaPlayer, {
+      baseUrl,
+      windowSec: 52,
+      minSheetSec: 20,
+      maxSheetSec: 52,
+      targetKeyframesPerSheet: 8,
+      rowSec: 18,
+      sampleStepSec: 1,
+      sheetWidth: 760,
+      rowHeight: 156,
+      keyframesPerRow: 4,
+      maxKeyframes: 12,
+      keyframeWidth: 150,
+      keyframeHeight: 84,
+      bandPixelsPerSecond: 3,
+      minBandWidth: 8,
+      anchorMaxWords: 6,
+      anchorFontPx: 12,
+      seekTimeoutMs: 20000,
+    });
+
+    async function build() {
+      const status = document.querySelector('#status');
+      const sheet = document.querySelector('#sheet');
+      const sidecar = document.querySelector('#sidecar');
+      status.textContent = 'Building film-matinee sheet...';
+      sheet.removeAttribute('src');
+      sidecar.textContent = '';
+      try {
+        const buildRequest = {
+          status: film,
+          currentTime: 52,
+          from: 0,
+          to: 52,
+        };
+        const visual = mode === 'window'
+          ? await cinemaVisual.buildWindowSheet(buildRequest)
+          : await cinemaVisual.buildAdaptiveSheet(buildRequest);
+        sheet.src = visual.sheet.dataUrl;
+        sidecar.textContent = visual.sidecar;
+        const range = visual.timeRange.map((time) => time.toFixed(1)).join('-');
+        const next = visual.nextFrom === null ? 'done' : visual.nextFrom.toFixed(1);
+        status.textContent = `Built ${visual.mode} ${range}s: ${visual.keyframes.length} keyframes, ${visual.samples.length} color samples, ${visual.subtitles.length} subtitle cues, next ${next}.`;
+        window.__lastCinemaVisual = visual;
+        const postUrl = params.get('post');
+        if (postUrl) {
+          await fetch(postUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: visual.sheet.dataUrl,
+          });
+        }
+      } catch (error) {
+        console.error(error);
+        status.textContent = `Failed: ${error.message}`;
+      }
+    }
+
+    document.querySelector('#build').addEventListener('click', build);
+    build();
+  </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+film-matinee
+
+This project is inspired by Echoes0302/clove-cinema:
+
+  https://github.com/Echoes0302/clove-cinema
+
+clove-cinema offers a lightweight local cinema server for watching films with
+AI chat frontends. film-matinee explores the complementary AI-facing layer:
+visual sheets, subtitle sidecars, linear chunk reading, and shared annotations.
+
+The local cinema server portions include code adapted from Echoes0302/clove-cinema
+under the MIT License as stated in that project's README.
+
+Project contributors are listed in README.md.

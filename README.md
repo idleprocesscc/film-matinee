@@ -1,9 +1,82 @@
-# clove-cinema
+# film-matinee
 
-> 极简放映室后端 — 给"我和我的 AI 一起看电影"用的。
->
-> 扫文件夹列片，HTTP Range 流，SRT 字幕按区间增量返回。**没有上传、没有抽帧、不依赖 ffmpeg。**
-> 截图给 AI 看当前画面这步由你自己的前端 canvas 实时抓，本服务不参与。
+> AI-first film reading tools: visual sheets, subtitle sidecars, linear chunk reading, and shared annotations.
+
+`film-matinee` 把一部电影切成 AI 可以线性阅读的 chunk。每个 chunk 由一张视觉 sheet、一份字幕 sidecar 和一组可同步批注组成：AI 可以像读书一样一节一节“看”电影，也可以在值得停下的地方留下评论，用户继续在评论下聊天。
+
+这个项目的灵感来自 [Echoes0302/clove-cinema](https://github.com/Echoes0302/clove-cinema)。`clove-cinema` 提供极简本地放映室；`film-matinee` 作为 AI 读片与观影批注的补足工具，专注于视觉压缩、字幕同步、MCP 线性阅读和共享批注。
+
+## 现在能做什么
+
+- 批量生成 `film-matinee sheet`：关键帧 + 色带 + 音频 rail + 极短字幕锚点。
+- 把完整字幕作为 sidecar 文本交给 AI，避免把文字全塞进图片。
+- 用 MCP 工具 `film_start` / `film_next` 让 AI 按顺序读 chunk。
+- 用 `film_note` / `film_reply` 写入共享 `annotations.json`，前端 viewer 可实时显示。
+- 保留原本轻量本地播放服务：扫文件夹、HTTP Range 视频流、SRT 字幕按区间返回。
+
+## 快速开始
+
+```bash
+git clone <this-repo> film-matinee
+cd film-matinee
+pip install -r requirements.txt
+```
+
+线性读片工作流见 [examples/FILM_MATINEE.md](examples/FILM_MATINEE.md)。旧式播放器集成见 [examples/INTEGRATION.md](examples/INTEGRATION.md)。
+
+## 生成视觉 Sheet
+
+```bash
+python3 tools/generate_film_matinee_sheets.py \
+  --video /path/to/movie.mkv \
+  --subtitle /path/to/subtitles.ass \
+  --title "Movie Title" \
+  --layout 5x4 \
+  --target-keyframes 18 \
+  --out-dir .cinema-cache/movie-title \
+  --max-sheets 0
+```
+
+然后启动批注桥：
+
+```bash
+python3 tools/film_matinee_notes_server.py \
+  --manifest .cinema-cache/movie-title/manifest.json \
+  --port 8792
+```
+
+打开 viewer：
+
+```text
+http://127.0.0.1:8788/examples/frontend/film-matinee-viewer.html?notes=http://127.0.0.1:8792
+```
+
+## MCP 工具
+
+```json
+{
+  "mcpServers": {
+    "film-matinee": {
+      "command": "python3",
+      "args": ["./tools/film_matinee_reader_mcp.py"]
+    }
+  }
+}
+```
+
+常用工具：
+
+- `film_overview(manifest_path)`：查看 chunk 索引。
+- `film_start(manifest_path, start_index=0)`：从某节开始读。
+- `film_next(manifest_path)`：继续下一节。
+- `film_chunk(manifest_path, index)`：读取指定 chunk。
+- `film_locate(manifest_path, timecode="", text="")`：兜底定位。
+- `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
+- `film_reply(manifest_path, note_id, text, author="user")`：把聊天挂在批注下。
+
+## Local Cinema Server
+
+下面这部分保留了 `clove-cinema` 风格的本地放映室后端：扫目录列片、HTTP Range 流、SRT 字幕按区间增量返回。
 
 ## 适用场景
 
@@ -16,14 +89,6 @@
 - 当前画面长什么样
 
 这个服务负责前三条。第四条（截图）由你前端 canvas 在发消息时抓当前帧塞 images 数组。
-
-## 装
-
-```bash
-git clone <this-repo> clove-cinema
-cd clove-cinema
-pip install -r requirements.txt
-```
 
 依赖就一个 `aiohttp>=3.9`。Python 3.9+。
 
@@ -106,6 +171,7 @@ python server.py --allow-origin https://your.site
 
 - `cinema-player.js` — 浮窗播放器（拖拽 / 缩放 / 最小化 / 持久化位置 / `snapshot()` API）
 - `cinema-player.css` — 样式
+- `cinema-visual-context.js` — film-matinee sheet 原型：关键帧 + 色带 + 字幕 sidecar
 
 集成的 4 步（详见 `examples/INTEGRATION.md`）：
 
@@ -113,6 +179,8 @@ python server.py --allow-origin https://your.site
 2. **片库页**：`GET /cinema/list` 拿片列表，点开调 `cinemaPlayer.open(id, title)`
 3. **发消息前**：调 `cinemaPlayer.status()` 拿当前 ts，`fetch('/cinema/sync/{id}?from=lastTs&to=curTs')` 拿增量字幕，`cinemaPlayer.snapshot()` 拿当前帧
 4. **拼进 chat payload**：字幕放 text 前缀，截图 dataURL 拆成 `{media_type, data}` 加进 images 数组
+
+如果要保留更多镜头语言，看 `examples/FILM_MATINEE.md` 和 `examples/VISUAL_CONTEXT.md`。`film-matinee` 是现在的 AI 线性读片工作流：批量生成视觉 sheet + 字幕 sidecar，并通过 MCP 一节一节读；旧的前端原型仍可用隐藏 video 抽取当前窗口。
 
 ## 嵌入式（不想跑独立服务）
 
@@ -148,3 +216,11 @@ iconv -f GBK -t UTF-8 input.srt > output.srt
 ## License
 
 MIT
+
+The local cinema server portions include code adapted from [Echoes0302/clove-cinema](https://github.com/Echoes0302/clove-cinema), which states MIT licensing in its README. See [NOTICE](NOTICE) for attribution.
+
+## Contributors
+
+- GPT
+- Claude
+- koshi

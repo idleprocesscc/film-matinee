@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>film-matinee viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0b0b0c;
+      color: #f3f0e8;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0b0b0c; }
+    button, input, textarea {
+      font: inherit;
+      color: inherit;
+      background: #18191b;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 0;
+    }
+    button { padding: 7px 10px; cursor: pointer; }
+    button[aria-current="true"] { background: #f3f0e8; color: #111; border-color: #f3f0e8; }
+    textarea, input { width: 100%; padding: 8px; }
+    textarea { min-height: 68px; resize: vertical; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 18px;
+      background: rgba(11,11,12,0.95);
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+    }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: 0; }
+    #meta { color: rgba(243,240,232,0.64); font-size: 12px; text-align: right; }
+    main {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr) 340px;
+      min-height: calc(100vh - 53px);
+    }
+    nav, aside {
+      border-right: 1px solid rgba(255,255,255,0.1);
+      background: #101112;
+      overflow: auto;
+      max-height: calc(100vh - 53px);
+    }
+    aside { border-right: 0; border-left: 1px solid rgba(255,255,255,0.1); }
+    #chunks { display: grid; gap: 4px; padding: 10px; }
+    #chunks button { text-align: left; line-height: 1.25; }
+    #stage { padding: 14px; overflow: auto; }
+    #sheet {
+      display: block;
+      width: min(100%, 1600px);
+      background: #050505;
+      border: 1px solid rgba(255,255,255,0.18);
+    }
+    pre {
+      margin: 12px 0 0;
+      padding: 12px;
+      white-space: pre-wrap;
+      line-height: 1.45;
+      background: #111214;
+      border: 1px solid rgba(255,255,255,0.1);
+      color: rgba(243,240,232,0.82);
+      max-width: 980px;
+    }
+    #notes { padding: 10px; display: grid; gap: 10px; }
+    .note {
+      border: 1px solid rgba(255,255,255,0.14);
+      padding: 10px;
+      background: #141518;
+    }
+    .note-meta, .reply-meta {
+      color: rgba(243,240,232,0.55);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+    .note-text, .reply-text { white-space: pre-wrap; line-height: 1.42; }
+    .replies { margin-top: 10px; display: grid; gap: 8px; }
+    .reply { border-left: 2px solid rgba(243,240,232,0.22); padding-left: 8px; }
+    .note form { display: grid; gap: 6px; margin-top: 10px; }
+    #new-note { padding: 10px; border-top: 1px solid rgba(255,255,255,0.1); display: grid; gap: 6px; }
+    #status { padding: 10px; color: rgba(243,240,232,0.64); font-size: 12px; }
+    @media (max-width: 1000px) {
+      main { grid-template-columns: 1fr; }
+      nav, aside { max-height: none; border: 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+      #chunks { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">film-matinee</h1>
+    <div id="meta"></div>
+  </header>
+  <main>
+    <nav id="chunks"></nav>
+    <section id="stage">
+      <img id="sheet" alt="film-matinee sheet">
+      <pre id="sidecar"></pre>
+    </section>
+    <aside>
+      <div id="notes"></div>
+      <form id="new-note">
+        <input id="note-timecode" placeholder="timecode">
+        <textarea id="note-text" placeholder="note"></textarea>
+        <button type="submit">Add note</button>
+      </form>
+      <div id="status"></div>
+    </aside>
+  </main>
+  <script type="module">
+    const params = new URLSearchParams(location.search);
+    const notesBase = params.get("notes")?.replace(/\/+$/, "") || "";
+    const manifestUrl = params.get("manifest") || "";
+    const state = {
+      manifest: null,
+      annotations: { version: 1, annotations: [] },
+      chunkIndex: Number(params.get("chunk") || 0),
+    };
+
+    function fmtTime(seconds) {
+      const total = Math.max(0, Math.round(Number(seconds) || 0));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    function status(text) {
+      document.querySelector("#status").textContent = text;
+    }
+
+    function fileUrl(rel) {
+      if (notesBase) {
+        const version = encodeURIComponent(state.manifest?.generated_at || state.manifest?.title || "v");
+        return `${notesBase}/file/${String(rel).split("/").map(encodeURIComponent).join("/")}?v=${version}`;
+      }
+      const manifestAbsolute = new URL(manifestUrl, location.href);
+      manifestAbsolute.pathname = manifestAbsolute.pathname.slice(0, manifestAbsolute.pathname.lastIndexOf("/") + 1);
+      manifestAbsolute.search = "";
+      manifestAbsolute.hash = "";
+      return new URL(rel, manifestAbsolute.href).href;
+    }
+
+    async function fetchJson(url, fallback = null) {
+      const response = await fetch(url);
+      if (!response.ok) {
+        if (fallback !== null && response.status === 404) return fallback;
+        throw new Error(`${url} ${response.status}`);
+      }
+      return response.json();
+    }
+
+    async function loadManifest() {
+      if (notesBase) {
+        state.manifest = await fetchJson(`${notesBase}/manifest`);
+      } else if (manifestUrl) {
+        state.manifest = await fetchJson(manifestUrl);
+      } else {
+        throw new Error("missing ?notes= or ?manifest=");
+      }
+    }
+
+    async function loadAnnotations() {
+      if (notesBase) {
+        state.annotations = await fetchJson(`${notesBase}/annotations`, { version: 1, annotations: [] });
+      } else if (manifestUrl) {
+        const annotationsUrl = manifestUrl.slice(0, manifestUrl.lastIndexOf("/") + 1) + "annotations.json";
+        state.annotations = await fetchJson(annotationsUrl, { version: 1, annotations: [] });
+      }
+    }
+
+    function currentSheet() {
+      return state.manifest.sheets.find((sheet) => Number(sheet.index) === state.chunkIndex)
+        || state.manifest.sheets[0];
+    }
+
+    function notesForChunk(index) {
+      return (state.annotations.annotations || []).filter((note) => Number(note.chunk_index) === Number(index));
+    }
+
+    async function postJson(url, body) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error(`${url} ${response.status}`);
+      return response.json();
+    }
+
+    function renderChunks() {
+      const chunks = document.querySelector("#chunks");
+      chunks.textContent = "";
+      for (const sheet of state.manifest.sheets) {
+        const [start, end] = sheet.time_range || [0, 0];
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("aria-current", Number(sheet.index) === state.chunkIndex ? "true" : "false");
+        button.textContent = `${String(sheet.index).padStart(3, "0")} ${fmtTime(start)}-${fmtTime(end)}  K${(sheet.keyframes || []).length}`;
+        button.addEventListener("click", () => {
+          state.chunkIndex = Number(sheet.index);
+          render();
+        });
+        chunks.append(button);
+      }
+    }
+
+    async function renderStage(sheet) {
+      document.querySelector("#sheet").src = fileUrl(sheet.sheet);
+      const sidecar = document.querySelector("#sidecar");
+      sidecar.textContent = "";
+      if (sheet.sidecar) {
+        const response = await fetch(fileUrl(sheet.sidecar));
+        sidecar.textContent = response.ok ? await response.text() : "";
+      }
+    }
+
+    function renderNotes(sheet) {
+      const wrap = document.querySelector("#notes");
+      wrap.textContent = "";
+      const notes = notesForChunk(sheet.index);
+      if (!notes.length) {
+        const empty = document.createElement("div");
+        empty.className = "note-meta";
+        empty.textContent = "No notes";
+        wrap.append(empty);
+      }
+      for (const note of notes) {
+        const node = document.createElement("article");
+        node.className = "note";
+        const meta = document.createElement("div");
+        meta.className = "note-meta";
+        meta.textContent = `${note.id} ${note.author || "ai"} ${note.timecode || ""} ${note.kind || ""}`;
+        const text = document.createElement("div");
+        text.className = "note-text";
+        text.textContent = note.text || "";
+        const replies = document.createElement("div");
+        replies.className = "replies";
+        for (const reply of note.replies || []) {
+          const replyNode = document.createElement("div");
+          replyNode.className = "reply";
+          const replyMeta = document.createElement("div");
+          replyMeta.className = "reply-meta";
+          replyMeta.textContent = `${reply.id} ${reply.author || ""}`;
+          const replyText = document.createElement("div");
+          replyText.className = "reply-text";
+          replyText.textContent = reply.text || "";
+          replyNode.append(replyMeta, replyText);
+          replies.append(replyNode);
+        }
+        const form = document.createElement("form");
+        const textarea = document.createElement("textarea");
+        textarea.placeholder = "reply";
+        const button = document.createElement("button");
+        button.type = "submit";
+        button.textContent = "Reply";
+        button.disabled = !notesBase;
+        form.append(textarea, button);
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (!notesBase) return;
+          await postJson(`${notesBase}/annotations/${encodeURIComponent(note.id)}/replies`, {
+            author: "user",
+            text: textarea.value,
+          });
+          textarea.value = "";
+          await loadAnnotations();
+          renderNotes(currentSheet());
+        });
+        node.append(meta, text, replies, form);
+        wrap.append(node);
+      }
+    }
+
+    async function render() {
+      const sheet = currentSheet();
+      const [start, end] = sheet.time_range || [0, 0];
+      state.chunkIndex = Number(sheet.index);
+      document.querySelector("#title").textContent = state.manifest.title || "film-matinee";
+      document.querySelector("#meta").textContent = `${String(sheet.index).padStart(3, "0")} ${fmtTime(start)}-${fmtTime(end)} / ${(state.manifest.sheets || []).length} chunks`;
+      renderChunks();
+      renderNotes(sheet);
+      await renderStage(sheet);
+      history.replaceState(null, "", `${location.pathname}?${new URLSearchParams({
+        ...(notesBase ? { notes: notesBase } : { manifest: manifestUrl }),
+        chunk: String(state.chunkIndex),
+      })}`);
+    }
+
+    document.querySelector("#new-note").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!notesBase) {
+        status("Read-only mode");
+        return;
+      }
+      const text = document.querySelector("#note-text").value;
+      const timecode = document.querySelector("#note-timecode").value;
+      await postJson(`${notesBase}/annotations`, {
+        author: "user",
+        chunk_index: state.chunkIndex,
+        timecode,
+        text,
+      });
+      document.querySelector("#note-text").value = "";
+      await loadAnnotations();
+      renderNotes(currentSheet());
+      status("Saved");
+    });
+
+    async function boot() {
+      try {
+        await loadManifest();
+        await loadAnnotations();
+        await render();
+        status(notesBase ? "Live annotations" : "Read-only annotations");
+        setInterval(async () => {
+          await loadAnnotations();
+          renderNotes(currentSheet());
+        }, 2500);
+      } catch (error) {
+        console.error(error);
+        status(error.message);
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
