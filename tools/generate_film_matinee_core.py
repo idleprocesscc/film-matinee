@@ -1163,7 +1163,7 @@ def ensure_valid_video(path: Path, probe: dict) -> float:
 def parse_layout(value: str) -> tuple[int, int]:
     match = re.fullmatch(r"(\d+)x(\d+)", value.strip().lower())
     if not match:
-        raise argparse.ArgumentTypeError("layout must look like 5x4 or 4x3")
+        raise argparse.ArgumentTypeError("layout must look like 4x4, 5x4, or 4x3")
     columns = int(match.group(1))
     rows = int(match.group(2))
     if columns < 1 or rows < 1:
@@ -1182,7 +1182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-sheets", type=int, default=3, help="0 means no explicit limit.")
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--layout", type=parse_layout, default=(4, 3), help="Grid capacity, e.g. 4x3 or 5x4.")
+    parser.add_argument("--layout", type=parse_layout, default=(4, 4), help="Grid capacity, e.g. 4x4, 5x4, or 4x3.")
     parser.add_argument("--subtitle-style-include", default="", help="Regex for ASS styles to include.")
     parser.add_argument("--subtitle-style-exclude", default="JP|Ruby", help="Regex for ASS styles to exclude.")
     parser.add_argument("--subtitle-offset-sec", type=float, default=0.0, help="Shift subtitle cues by this many seconds.")
@@ -1192,7 +1192,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-height", type=int, default=36)
     parser.add_argument("--min-sheet-sec", type=float, default=60.0)
     parser.add_argument("--max-sheet-sec", type=float, default=600.0)
-    parser.add_argument("--target-keyframes", type=int, default=12)
+    parser.add_argument("--target-keyframes", type=int, default=16)
     parser.add_argument("--max-keyframes", type=int)
     parser.add_argument("--min-segment-sec", type=float, default=4.0)
     parser.add_argument("--max-segment-sec", type=float, default=18.0)

@@ -111,12 +111,12 @@ createFilmMatineeVisualContext(filmMatineePlayer, {
   windowSec: 90,        // 当前播放点往前看多少秒
   minSheetSec: 60,      // adaptive sheet 至少覆盖多久
   maxSheetSec: 600,     // adaptive sheet 最多先分析多久
-  targetKeyframesPerSheet: 12,
+  targetKeyframesPerSheet: 16,
   rowSec: 30,           // 每行 filmstrip 表示多少秒
   sampleStepSec: 1,     // 色带采样间隔
   sheetWidth: 1600,
   keyframesPerRow: 4,
-  maxKeyframes: 12,
+  maxKeyframes: 16,
   bandPixelsPerSecond: 2,
   includeCurrentFrame: false,
 });
@@ -125,7 +125,7 @@ createFilmMatineeVisualContext(filmMatineePlayer, {
 建议从两套模式开始：
 
 - 聊天时看当前上下文：`buildWindowSheet()` / `collect()`，`windowSec=60-90`。
-- 让 AI 线性“看完”一部电影：`buildAdaptiveSheet()`，默认 `targetKeyframesPerSheet=12`；精读高密度段落可升到 16-20，`maxSheetSec=300-600`。
+- 让 AI 线性“看完”一部电影：`buildAdaptiveSheet()`，默认 `targetKeyframesPerSheet=16`；轻量观影可降到 12，精读高密度段落可升到 20，`maxSheetSec=300-600`。
 
 关键帧数量会按视觉信息密度自适应：普通段落较少，快切 / 蒙太奇 / 强视觉事件会补更多 micro keyframe。`maxKeyframes` 用来限制单张 sheet 的上限。
 
