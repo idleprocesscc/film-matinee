@@ -602,7 +602,7 @@ def film_overview(manifest_path: str) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def film_start(manifest_path: str, start_index: int = 0) -> list[Any]:
     """Set the reading cursor and return the first chunk to read."""
     path, manifest = _load_manifest(manifest_path)
@@ -614,7 +614,7 @@ def film_start(manifest_path: str, start_index: int = 0) -> list[Any]:
     return _chunk_response(path, manifest, sheets[start_index], cursor_after=start_index + 1)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def film_next(manifest_path: str) -> list[Any]:
     """Read the chunk at the current cursor, then advance the cursor."""
     path, manifest = _load_manifest(manifest_path)
@@ -626,7 +626,7 @@ def film_next(manifest_path: str) -> list[Any]:
     return _chunk_response(path, manifest, sheets[cursor], cursor_after=cursor + 1)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def film_chunk(manifest_path: str, index: int, advance_cursor: bool = False) -> list[Any]:
     """Read one explicit chunk by index."""
     path, manifest = _load_manifest(manifest_path)
