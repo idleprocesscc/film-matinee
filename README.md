@@ -64,6 +64,12 @@ http://127.0.0.1:8788/examples/frontend/film-matinee-viewer.html?notes=http://12
 }
 ```
 
+Claude Code 也可以直接注册当前 checkout：
+
+```bash
+claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_mcp.py"
+```
+
 常用工具：
 
 - `film_overview(manifest_path)`：查看 chunk 索引。
