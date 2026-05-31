@@ -1176,9 +1176,21 @@ def compact_rows_from_keyframes(keyframes: list[dict], start: float, end: float,
         frames = keyframes[index : index + per_row]
         if not frames:
             continue
+        previous_frame = keyframes[index - 1] if index > 0 else None
+        next_frame = keyframes[index + per_row] if index + per_row < len(keyframes) else None
+        row_start = (
+            (previous_frame["time"] + frames[0]["time"]) / 2
+            if previous_frame
+            else start
+        )
+        row_end = (
+            (frames[-1]["time"] + next_frame["time"]) / 2
+            if next_frame
+            else end
+        )
         rows.append({
-            "start": max(start, frames[0]["segment"]["start"]),
-            "end": min(end, frames[-1]["segment"]["end"]),
+            "start": clamp(row_start, start, end),
+            "end": clamp(row_end, start, end),
             "frames": frames,
         })
     return rows or [{"start": start, "end": end, "frames": []}]
@@ -1200,22 +1212,36 @@ def choose_keyframes_per_row(total: int, options: argparse.Namespace) -> int:
     return min(candidates, key=lambda per_row: row_pack_score(total, per_row))
 
 
-def layout_row(row: dict, left: int, content_width: int, options: argparse.Namespace) -> list[dict]:
+def band_width_for_duration(duration: float, options: argparse.Namespace) -> float:
+    if duration <= 0.001:
+        return 0.0
+    return max(options.min_band_width, duration * options.band_pixels_per_second)
+
+
+def layout_row(row: dict, left: int, content_width: int, options: argparse.Namespace) -> dict:
     frames = row["frames"]
     if not frames:
-        return []
+        return {"items": [], "x": left, "width": content_width, "lead_width": 0, "tail_width": 0}
+    lead_width = band_width_for_duration(frames[0]["time"] - row["start"], options)
+    tail_width = band_width_for_duration(row["end"] - frames[-1]["time"], options)
     band_widths = []
     for index in range(len(frames) - 1):
         duration = max(0.001, frames[index + 1]["time"] - frames[index]["time"])
-        band_widths.append(max(options.min_band_width, duration * options.band_pixels_per_second))
+        band_widths.append(band_width_for_duration(duration, options))
     total_frame_width = len(frames) * options.keyframe_width
-    requested = total_frame_width + sum(band_widths)
+    requested = lead_width + total_frame_width + sum(band_widths) + tail_width
     scale = min(1.0, content_width / requested) if requested else 1.0
     frame_width = max(96, int(options.keyframe_width * scale))
     frame_height = round(frame_width * options.keyframe_height / options.keyframe_width)
-    scaled_bands = [max(options.min_band_width * 0.6, width * scale) for width in band_widths]
-    total_width = len(frames) * frame_width + sum(scaled_bands)
-    x = left + max(0, (content_width - total_width) / 2)
+    scaled_lead = max(options.min_band_width * 0.6, lead_width * scale) if lead_width else 0
+    scaled_tail = max(options.min_band_width * 0.6, tail_width * scale) if tail_width else 0
+    scaled_bands = [
+        max(options.min_band_width * 0.6, width * scale) if width else 0
+        for width in band_widths
+    ]
+    total_width = scaled_lead + len(frames) * frame_width + sum(scaled_bands) + scaled_tail
+    track_x = left + max(0, (content_width - total_width) / 2)
+    x = track_x + scaled_lead
     items = []
     for index, frame in enumerate(frames):
         band_after = scaled_bands[index] if index < len(scaled_bands) else 0
@@ -1227,10 +1253,18 @@ def layout_row(row: dict, left: int, content_width: int, options: argparse.Names
             "band_after": int(round(band_after)),
         })
         x += frame_width + band_after
-    return items
+    return {
+        "items": items,
+        "x": int(round(track_x)),
+        "width": int(round(total_width)),
+        "lead_width": int(round(scaled_lead)),
+        "tail_width": int(round(scaled_tail)),
+    }
 
 
 def draw_color_band(draw: ImageDraw.ImageDraw, samples: list[dict], start: float, end: float, x: int, y: int, width: int, height: int) -> None:
+    if width <= 0 or height <= 0 or end <= start + 0.001:
+        return
     draw.rectangle([x, y, x + width, y + height], fill=(22, 22, 22), outline=(60, 60, 60))
     row_samples = samples_in_range(samples, start, end)
     if not row_samples:
@@ -1324,13 +1358,31 @@ def render_sheet(
         row_top = top + row_index * row_height
         label_y = row_top + 7
         frame_y = row_top + 26
-        row_items = layout_row(row, left, content_width, options)
-        frame_mid_y = frame_y + (row_items[0]["height"] if row_items else options.keyframe_height) / 2
-        marker_y = frame_y + (row_items[0]["height"] if row_items else options.keyframe_height) + 30
+        row_layout = layout_row(row, left, content_width, options)
+        row_items = row_layout["items"]
+        track_x = row_layout["x"]
+        track_width = row_layout["width"]
+        track_end = track_x + track_width
+        frame_height = row_items[0]["height"] if row_items else options.keyframe_height
+        frame_mid_y = frame_y + frame_height / 2
+        marker_y = frame_y + frame_height + 30
         audio_y = marker_y + 8
 
         draw.text((left, label_y), f"{fmt_time(row['start'])}-{fmt_time(row['end'])}", fill=(80, 80, 80), font=small_font)
-        draw.line([(left, int(frame_mid_y)), (left + content_width, int(frame_mid_y))], fill=(30, 30, 30), width=1)
+        draw.line([(track_x, int(frame_mid_y)), (track_end, int(frame_mid_y))], fill=(30, 30, 30), width=1)
+
+        if row_items and row_layout["lead_width"] > 3:
+            first_item = row_items[0]
+            draw_color_band(
+                draw,
+                samples,
+                row["start"],
+                first_item["frame"]["time"],
+                track_x,
+                frame_y,
+                row_layout["lead_width"],
+                first_item["height"],
+            )
 
         for item_index in range(len(row_items) - 1):
             item = row_items[item_index]
@@ -1341,9 +1393,23 @@ def render_sheet(
             if gap_width > 3:
                 draw_color_band(draw, samples, item["frame"]["time"], next_item["frame"]["time"], gap_x, frame_y, gap_width, item["height"])
 
-        draw_subtitle_markers(draw, cues, row["start"], row["end"], left, marker_y, content_width)
+        if row_items and row_layout["tail_width"] > 3:
+            last_item = row_items[-1]
+            tail_x = last_item["x"] + last_item["width"]
+            draw_color_band(
+                draw,
+                samples,
+                last_item["frame"]["time"],
+                row["end"],
+                tail_x,
+                frame_y,
+                row_layout["tail_width"],
+                last_item["height"],
+            )
+
+        draw_subtitle_markers(draw, cues, row["start"], row["end"], track_x, marker_y, track_width)
         if options.audio_rail:
-            draw_audio_waveform(draw, audio_levels, row["start"], row["end"], left, audio_y, content_width, options.audio_rail_height)
+            draw_audio_waveform(draw, audio_levels, row["start"], row["end"], track_x, audio_y, track_width, options.audio_rail_height)
 
         for item in row_items:
             frame = item["frame"]

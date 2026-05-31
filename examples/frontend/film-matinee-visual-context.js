@@ -960,6 +960,7 @@ function splitRows(from, to, options) {
 }
 
 function drawColorBand(ctx, samples, rowStart, rowEnd, x, y, width, height) {
+  if (width <= 0 || height <= 0 || rowEnd <= rowStart + 0.001) return;
   rectPath(ctx, x, y, width, height);
   ctx.fillStyle = "#161616";
   ctx.fill();
@@ -1007,15 +1008,30 @@ function drawSubtitleMarkers(ctx, cues, rowStart, rowEnd, x, y, width) {
   }
 }
 
+function bandWidthForDuration(duration, options) {
+  if (duration <= 0.001) return 0;
+  const pxPerSecond = Math.max(0.5, Number(options.bandPixelsPerSecond) || 2);
+  const minBandWidth = Math.max(4, Number(options.minBandWidth) || 10);
+  return Math.max(minBandWidth, duration * pxPerSecond);
+}
+
 function compactRowsFromKeyframes(keyframes, from, to, options) {
   const perRow = Math.max(1, Math.floor(options.keyframesPerRow || 3));
   const rows = [];
   for (let i = 0; i < keyframes.length; i += perRow) {
     const frames = keyframes.slice(i, i + perRow);
     if (!frames.length) continue;
+    const previousFrame = i > 0 ? keyframes[i - 1] : null;
+    const nextFrame = i + perRow < keyframes.length ? keyframes[i + perRow] : null;
+    const rowStart = previousFrame
+      ? (previousFrame.time + frames[0].time) / 2
+      : from;
+    const rowEnd = nextFrame
+      ? (frames[frames.length - 1].time + nextFrame.time) / 2
+      : to;
     rows.push({
-      start: Math.max(from, frames[0].segment?.start ?? frames[0].time),
-      end: Math.min(to, frames[frames.length - 1].segment?.end ?? frames[frames.length - 1].time),
+      start: clamp(rowStart, from, to),
+      end: clamp(rowEnd, from, to),
       frames,
     });
   }
@@ -1024,27 +1040,39 @@ function compactRowsFromKeyframes(keyframes, from, to, options) {
 
 function layoutCompactRow(row, left, contentWidth, options) {
   const frames = row.frames || [];
-  if (!frames.length) return [];
+  if (!frames.length) {
+    return {
+      items: [],
+      x: left,
+      width: contentWidth,
+      leadWidth: 0,
+      tailWidth: 0,
+    };
+  }
 
   const gapCount = Math.max(0, frames.length - 1);
-  const pxPerSecond = Math.max(0.5, Number(options.bandPixelsPerSecond) || 2);
   const minBandWidth = Math.max(4, Number(options.minBandWidth) || 10);
+  const leadWidth = bandWidthForDuration(frames[0].time - row.start, options);
+  const tailWidth = bandWidthForDuration(row.end - frames[frames.length - 1].time, options);
   const bandWidths = [];
   for (let i = 0; i < gapCount; i += 1) {
     const duration = Math.max(0.001, frames[i + 1].time - frames[i].time);
-    bandWidths.push(Math.max(minBandWidth, duration * pxPerSecond));
+    bandWidths.push(bandWidthForDuration(duration, options));
   }
   const totalFrameWidth = frames.length * options.keyframeWidth;
-  const requested = totalFrameWidth + bandWidths.reduce((sum, width) => sum + width, 0);
+  const requested = leadWidth + totalFrameWidth + bandWidths.reduce((sum, width) => sum + width, 0) + tailWidth;
   const available = contentWidth;
   let scale = requested > available ? available / requested : 1;
   const frameWidth = Math.max(96, options.keyframeWidth * scale);
   const frameHeight = Math.round(frameWidth * options.keyframeHeight / options.keyframeWidth);
+  const scaledLead = leadWidth ? Math.max(minBandWidth * 0.6, leadWidth * scale) : 0;
+  const scaledTail = tailWidth ? Math.max(minBandWidth * 0.6, tailWidth * scale) : 0;
   const scaledBands = bandWidths.map((width) => Math.max(minBandWidth * 0.6, width * scale));
-  const totalWidth = frames.length * frameWidth + scaledBands.reduce((sum, width) => sum + width, 0);
-  let x = left + Math.max(0, (available - totalWidth) / 2);
+  const totalWidth = scaledLead + frames.length * frameWidth + scaledBands.reduce((sum, width) => sum + width, 0) + scaledTail;
+  const trackX = left + Math.max(0, (available - totalWidth) / 2);
+  let x = trackX + scaledLead;
 
-  return frames.map((frame, index) => {
+  const items = frames.map((frame, index) => {
     const item = {
       frame,
       frameX: x,
@@ -1056,6 +1084,13 @@ function layoutCompactRow(row, left, contentWidth, options) {
     x += frameWidth + (scaledBands[index] || 0);
     return item;
   });
+  return {
+    items,
+    x: trackX,
+    width: totalWidth,
+    leadWidth: scaledLead,
+    tailWidth: scaledTail,
+  };
 }
 
 async function renderSheet({ filmTitle, from, to, rows, samples, keyframes, cues, options }) {
@@ -1097,8 +1132,12 @@ async function renderSheet({ filmTitle, from, to, rows, samples, keyframes, cues
     const rowTop = top + rowIndex * rowHeight;
     const frameY = rowTop + 26;
     const labelY = rowTop + 18;
-    const rowItems = layoutCompactRow(row, left, contentWidth, options)
+    const rowLayout = layoutCompactRow(row, left, contentWidth, options);
+    const rowItems = rowLayout.items
       .map((item) => ({ ...item, frameY }));
+    const trackX = rowLayout.x;
+    const trackWidth = rowLayout.width;
+    const trackEnd = trackX + trackWidth;
     const markerY = frameY + (rowItems[0]?.frameHeight || options.keyframeHeight) + 30;
 
     ctx.fillStyle = "rgba(255,255,255,0.08)";
@@ -1108,9 +1147,22 @@ async function renderSheet({ filmTitle, from, to, rows, samples, keyframes, cues
     ctx.strokeStyle = "rgba(255,255,255,0.08)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(left, frameY + (rowItems[0]?.frameHeight || options.keyframeHeight) / 2);
-    ctx.lineTo(left + contentWidth, frameY + (rowItems[0]?.frameHeight || options.keyframeHeight) / 2);
+    ctx.moveTo(trackX, frameY + (rowItems[0]?.frameHeight || options.keyframeHeight) / 2);
+    ctx.lineTo(trackEnd, frameY + (rowItems[0]?.frameHeight || options.keyframeHeight) / 2);
     ctx.stroke();
+
+    if (rowItems.length && rowLayout.leadWidth > 3) {
+      drawColorBand(
+        ctx,
+        samples,
+        row.start,
+        rowItems[0].frame.time,
+        trackX,
+        frameY,
+        rowLayout.leadWidth,
+        rowItems[0].frameHeight,
+      );
+    }
 
     for (let itemIndex = 0; itemIndex < rowItems.length - 1; itemIndex += 1) {
       const item = rowItems[itemIndex];
@@ -1132,7 +1184,21 @@ async function renderSheet({ filmTitle, from, to, rows, samples, keyframes, cues
       }
     }
 
-    drawSubtitleMarkers(ctx, cues, row.start, row.end, left, markerY, contentWidth);
+    if (rowItems.length && rowLayout.tailWidth > 3) {
+      const last = rowItems[rowItems.length - 1];
+      drawColorBand(
+        ctx,
+        samples,
+        last.frame.time,
+        row.end,
+        last.frameX + last.frameWidth,
+        frameY,
+        rowLayout.tailWidth,
+        last.frameHeight,
+      );
+    }
+
+    drawSubtitleMarkers(ctx, cues, row.start, row.end, trackX, markerY, trackWidth);
 
     for (const item of rowItems) {
       const { frame } = item;
