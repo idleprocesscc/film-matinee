@@ -731,8 +731,10 @@ def pick_gap_coverage_keyframes(
             selected_times = [item.time for item in selected] + [item.time for item in additions]
             for sample in candidates:
                 target_score = 1 - clamp(abs(sample["t"] - target) / max(0.001, radius), 0, 1)
+                duration_bonus = 0.12 * clamp((gap / max_gap) - 1, 0, 1.5)
                 score = (
-                    0.9
+                    0.95
+                    + duration_bonus
                     + 0.2 * representative_score(sample, segment_samples, cues, selected_times, options)
                     + 0.08 * target_score
                     + 0.08 * subtitle_proximity_score(sample["t"], cues, options)
@@ -744,20 +746,44 @@ def pick_gap_coverage_keyframes(
     return additions
 
 
-def action_activity_score(sample: dict, gap_samples: list[dict], options: argparse.Namespace) -> float:
+def gap_activity_components(
+    sample: dict,
+    gap_samples: list[dict],
+    left_sample: dict | None,
+    right_sample: dict | None,
+    options: argparse.Namespace,
+) -> dict:
     change_ref = max(45.0, quantile([item["change"] for item in gap_samples], 0.9))
     regional_ref = max(35.0, quantile([item.get("regional_change", 0.0) for item in gap_samples], 0.9))
     motion_ref = max(0.04, quantile([item.get("motion", 0.0) for item in gap_samples], 0.9))
-    return clamp(
+    action = clamp(
         0.35 * clamp(sample["change"] / change_ref, 0, 1)
         + 0.35 * clamp(sample.get("regional_change", 0.0) / regional_ref, 0, 1)
         + 0.3 * clamp(sample.get("motion", 0.0) / motion_ref, 0, 1),
         0,
         1,
     )
+    color_island = clamp(sample.get("color_island", 0.0) / max(1.0, options.color_island_threshold), 0, 1)
+    endpoint_shift = 0.0
+    if left_sample and right_sample:
+        endpoint_shift = clamp(
+            min(
+                color_distance(sample["rgb"], left_sample["rgb"]),
+                color_distance(sample["rgb"], right_sample["rgb"]),
+            ) / max(1.0, options.coverage_color_shift_threshold),
+            0,
+            1,
+        )
+    palette_deviation = clamp(
+        color_distance(sample["rgb"], average_rgb(gap_samples)) / max(1.0, options.coverage_color_shift_threshold),
+        0,
+        1,
+    )
+    color = max(color_island, endpoint_shift, 0.7 * palette_deviation)
+    return {"activity": max(action, color), "action": action, "color": color}
 
 
-def pick_action_coverage_keyframes(
+def pick_visual_coverage_keyframes(
     selected: list[Selection],
     samples: list[dict],
     cues: list[Cue],
@@ -788,8 +814,11 @@ def pick_action_coverage_keyframes(
         scored: list[Selection] = []
         selected_times = [item.time for item in selected] + [item.time for item in additions]
         segment = Segment(left, right, 0.0)
+        left_sample = sample_at_or_near(samples, left)
+        right_sample = sample_at_or_near(samples, right)
         for sample in gap_samples:
-            activity = action_activity_score(sample, gap_samples, options)
+            activity_parts = gap_activity_components(sample, gap_samples, left_sample, right_sample, options)
+            activity = activity_parts["activity"]
             if activity < options.action_gap_min_activity:
                 continue
             diversity = (
@@ -797,15 +826,18 @@ def pick_action_coverage_keyframes(
                 if selected_times
                 else 1
             )
+            duration_bonus = 0.16 * clamp((gap / action_gap) - 1, 0, 2)
             score = (
-                0.72
+                0.78
+                + duration_bonus
                 + 0.22 * activity
                 + 0.12 * sample["quality"]
                 + 0.08 * diversity
                 + 0.05 * subtitle_proximity_score(sample["t"], cues, options)
                 - (0.2 if sample["low_information"] else 0)
             )
-            scored.append(Selection(sample["t"], score, "action-coverage", segment))
+            reason = "color-coverage" if activity_parts["color"] > activity_parts["action"] else "action-coverage"
+            scored.append(Selection(sample["t"], score, reason, segment))
         if scored:
             additions.append(sorted(scored, key=lambda item: item.score, reverse=True)[0])
             if len(additions) >= max_additions:
@@ -813,12 +845,64 @@ def pick_action_coverage_keyframes(
     return additions
 
 
-def dedupe_keyframe_candidates(candidates: list[Selection], max_count: int, options: argparse.Namespace) -> list[Selection]:
+def keyframe_visual_distance(left: dict, right: dict) -> float:
+    tile_count = min(len(left.get("tiles", [])), len(right.get("tiles", [])))
+    tile_avg = 0.0
+    tile_max = 0.0
+    if tile_count:
+        distances = [
+            color_distance(left["tiles"][index]["rgb"], right["tiles"][index]["rgb"]) / 255
+            for index in range(tile_count)
+        ]
+        tile_avg = average(distances)
+        tile_max = max(distances)
+    global_distance = color_distance(left["rgb"], right["rgb"]) / 255
+    luma_distance = abs(left["luma"] - right["luma"])
+    contrast_distance = abs(left["contrast"] - right["contrast"])
+    edge_distance = abs(left["edge"] - right["edge"])
+    return (
+        0.35 * global_distance
+        + 0.42 * tile_avg
+        + 0.12 * tile_max
+        + 0.06 * luma_distance
+        + 0.03 * contrast_distance
+        + 0.02 * edge_distance
+    )
+
+
+def selections_are_visually_similar(
+    left: Selection,
+    right: Selection,
+    samples: list[dict],
+    options: argparse.Namespace,
+) -> bool:
+    if abs(left.time - right.time) > options.similar_keyframe_window_sec:
+        return False
+    left_sample = sample_at_or_near(samples, left.time)
+    right_sample = sample_at_or_near(samples, right.time)
+    if not left_sample or not right_sample:
+        return False
+    return keyframe_visual_distance(left_sample, right_sample) <= options.similar_keyframe_distance
+
+
+def dedupe_keyframe_candidates(
+    candidates: list[Selection],
+    max_count: int,
+    options: argparse.Namespace,
+    samples: list[dict] | None = None,
+) -> list[Selection]:
     deduped: list[Selection] = []
     for item in sorted(candidates, key=lambda sel: sel.score, reverse=True):
         if len(deduped) >= max_count:
             break
-        if all(abs(existing.time - item.time) >= max(1, options.min_micro_keyframe_gap_sec) for existing in deduped):
+        if all(
+            abs(existing.time - item.time) >= max(1, options.min_micro_keyframe_gap_sec)
+            and (
+                samples is None
+                or not selections_are_visually_similar(existing, item, samples, options)
+            )
+            for existing in deduped
+        ):
             deduped.append(item)
     return sorted(deduped, key=lambda item: item.time)
 
@@ -845,10 +929,10 @@ def pick_keyframe_selections(samples: list[dict], start: float, end: float, cues
             continue
         candidates.append(pick)
 
-    preliminary = dedupe_keyframe_candidates(candidates, max_count, options)
+    preliminary = dedupe_keyframe_candidates(candidates, max_count, options, samples)
     coverage = [
         *pick_gap_coverage_keyframes(preliminary, samples, cues, start, end, options),
-        *pick_action_coverage_keyframes(preliminary, samples, cues, start, end, options),
+        *pick_visual_coverage_keyframes(preliminary, samples, cues, start, end, options),
     ]
     candidates.extend(coverage)
 
@@ -860,7 +944,7 @@ def pick_keyframe_selections(samples: list[dict], start: float, end: float, cues
         )[0]
         candidates.append(Selection(best["t"], best["quality"], "fallback-quality", Segment(start, end)))
 
-    return dedupe_keyframe_candidates(candidates, max_count, options)
+    return dedupe_keyframe_candidates(candidates, max_count, options, samples)
 
 
 def selection_end(selection: Selection, fallback: float) -> float:
@@ -1479,6 +1563,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action-gap-sec", type=float, default=20.0, help="Add motion-aware candidates when final keyframes leave active gaps longer than this.")
     parser.add_argument("--action-gap-min-activity", type=float, default=0.45, help="Minimum normalized activity score for motion-aware gap candidates.")
     parser.add_argument("--max-action-coverage-keyframes-per-sheet", type=int, default=4)
+    parser.add_argument("--coverage-color-shift-threshold", type=float, default=72.0, help="RGB distance for color-shift coverage inside long gaps.")
+    parser.add_argument("--similar-keyframe-window-sec", type=float, default=6.0, help="Drop near-duplicate keyframes within this time window.")
+    parser.add_argument("--similar-keyframe-distance", type=float, default=0.06, help="Visual distance threshold for near-duplicate keyframes.")
     parser.add_argument("--motion-weight", type=float, default=260.0)
     parser.add_argument("--low-info-luma", type=float, default=0.035)
     parser.add_argument("--high-info-luma", type=float, default=0.97)

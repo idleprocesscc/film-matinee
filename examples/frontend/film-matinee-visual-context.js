@@ -39,6 +39,9 @@ const DEFAULTS = {
   actionGapSec: 20,
   actionGapMinActivity: 0.45,
   maxActionCoverageKeyframesPerSheet: 4,
+  coverageColorShiftThreshold: 72,
+  similarKeyframeWindowSec: 6,
+  similarKeyframeDistance: 0.06,
   lowInfoLuma: 0.035,
   highInfoLuma: 0.97,
   maxAnchorDistanceSec: 6,
@@ -691,9 +694,11 @@ function pickGapCoverageKeyframes(selected, samples, cues, from, to, options) {
       const scored = candidates
         .map((sample) => {
           const targetScore = 1 - clamp(Math.abs(sample.t - target) / Math.max(0.001, radius), 0, 1);
+          const durationBonus = 0.12 * clamp((gap / maxGap) - 1, 0, 1.5);
           return {
             time: sample.t,
-            score: 0.9
+            score: 0.95
+              + durationBonus
               + 0.2 * representativeScore(sample, segmentSamples.length ? segmentSamples : candidates, cues, selectedTimes, options)
               + 0.08 * targetScore
               + 0.08 * subtitleProximityScore(sample.t, cues, options)
@@ -709,18 +714,37 @@ function pickGapCoverageKeyframes(selected, samples, cues, from, to, options) {
   return additions;
 }
 
-function actionActivityScore(sample, gapSamples) {
+function gapActivityComponents(sample, gapSamples, leftSample, rightSample, options) {
   const changeRef = Math.max(45, quantile(gapSamples.map((item) => item.change), 0.9));
   const regionalRef = Math.max(35, quantile(gapSamples.map((item) => item.regionalChange || 0), 0.9));
-  return clamp(
+  const action = clamp(
     0.55 * clamp(sample.change / changeRef, 0, 1)
     + 0.45 * clamp((sample.regionalChange || 0) / regionalRef, 0, 1),
     0,
     1,
   );
+  const colorIsland = clamp((sample.colorIsland || 0) / Math.max(1, options.colorIslandThreshold), 0, 1);
+  let endpointShift = 0;
+  if (leftSample && rightSample) {
+    endpointShift = clamp(
+      Math.min(
+        colorDistance(sample.rgb, leftSample.rgb),
+        colorDistance(sample.rgb, rightSample.rgb),
+      ) / Math.max(1, options.coverageColorShiftThreshold),
+      0,
+      1,
+    );
+  }
+  const paletteDeviation = clamp(
+    colorDistance(sample.rgb, averageRgb(gapSamples)) / Math.max(1, options.coverageColorShiftThreshold),
+    0,
+    1,
+  );
+  const color = Math.max(colorIsland, endpointShift, 0.7 * paletteDeviation);
+  return { activity: Math.max(action, color), action, color };
 }
 
-function pickActionCoverageKeyframes(selected, samples, cues, from, to, options) {
+function pickVisualCoverageKeyframes(selected, samples, cues, from, to, options) {
   const actionGap = Number(options.actionGapSec) || 0;
   const maxAdditions = Math.max(0, Math.floor(Number(options.maxActionCoverageKeyframesPerSheet) || 0));
   if (actionGap <= 0 || maxAdditions <= 0 || !samples.length) return [];
@@ -740,22 +764,27 @@ function pickActionCoverageKeyframes(selected, samples, cues, from, to, options)
 
     const selectedTimes = [...selected, ...additions].map((item) => item.time);
     const segment = { start: left, end: right };
+    const leftSample = sampleAtOrNear(samples, left);
+    const rightSample = sampleAtOrNear(samples, right);
     const scored = gapSamples
       .map((sample) => {
-        const activity = actionActivityScore(sample, gapSamples);
+        const activityParts = gapActivityComponents(sample, gapSamples, leftSample, rightSample, options);
+        const activity = activityParts.activity;
         if (activity < options.actionGapMinActivity) return null;
         const diversity = selectedTimes.length
           ? clamp(Math.min(...selectedTimes.map((time) => Math.abs(time - sample.t))) / actionGap, 0, 1)
           : 1;
+        const durationBonus = 0.16 * clamp((gap / actionGap) - 1, 0, 2);
         return {
           time: sample.t,
-          score: 0.72
+          score: 0.78
+            + durationBonus
             + 0.22 * activity
             + 0.12 * sample.quality
             + 0.08 * diversity
             + 0.05 * subtitleProximityScore(sample.t, cues, options)
             - (sample.lowInformation ? 0.2 : 0),
-          reason: "action-coverage",
+          reason: activityParts.color > activityParts.action ? "color-coverage" : "action-coverage",
           segment,
         };
       })
@@ -767,11 +796,46 @@ function pickActionCoverageKeyframes(selected, samples, cues, from, to, options)
   return additions;
 }
 
-function dedupeKeyframeCandidates(candidates, maxCount, options) {
+function keyframeVisualDistance(left, right) {
+  const tileCount = Math.min(left.tiles?.length || 0, right.tiles?.length || 0);
+  let tileAvg = 0;
+  let tileMax = 0;
+  if (tileCount) {
+    const distances = [];
+    for (let index = 0; index < tileCount; index += 1) {
+      distances.push(colorDistance(left.tiles[index].rgb, right.tiles[index].rgb) / 255);
+    }
+    tileAvg = average(distances);
+    tileMax = Math.max(...distances);
+  }
+  const globalDistance = colorDistance(left.rgb, right.rgb) / 255;
+  const lumaDistance = Math.abs(left.luma - right.luma);
+  const contrastDistance = Math.abs(left.contrast - right.contrast);
+  const edgeDistance = Math.abs(left.edge - right.edge);
+  return 0.35 * globalDistance
+    + 0.42 * tileAvg
+    + 0.12 * tileMax
+    + 0.06 * lumaDistance
+    + 0.03 * contrastDistance
+    + 0.02 * edgeDistance;
+}
+
+function selectionsAreVisuallySimilar(left, right, samples, options) {
+  if (Math.abs(left.time - right.time) > options.similarKeyframeWindowSec) return false;
+  const leftSample = sampleAtOrNear(samples, left.time);
+  const rightSample = sampleAtOrNear(samples, right.time);
+  if (!leftSample || !rightSample) return false;
+  return keyframeVisualDistance(leftSample, rightSample) <= options.similarKeyframeDistance;
+}
+
+function dedupeKeyframeCandidates(candidates, maxCount, options, samples = null) {
   const deduped = [];
   for (const item of candidates.sort((a, b) => b.score - a.score)) {
     if (deduped.length >= maxCount) break;
-    if (deduped.every((existing) => Math.abs(existing.time - item.time) >= Math.max(1, options.minMicroKeyframeGapSec))) {
+    if (deduped.every((existing) => (
+      Math.abs(existing.time - item.time) >= Math.max(1, options.minMicroKeyframeGapSec)
+      && (!samples || !selectionsAreVisuallySimilar(existing, item, samples, options))
+    ))) {
       deduped.push(item);
     }
   }
@@ -805,10 +869,10 @@ function pickKeyframeSelections(samples, from, to, cues, rows, options) {
     });
   }
 
-  const preliminary = dedupeKeyframeCandidates(candidates, maxCount, options);
+  const preliminary = dedupeKeyframeCandidates(candidates, maxCount, options, samples);
   candidates.push(
     ...pickGapCoverageKeyframes(preliminary, samples, cues, from, to, options),
-    ...pickActionCoverageKeyframes(preliminary, samples, cues, from, to, options),
+    ...pickVisualCoverageKeyframes(preliminary, samples, cues, from, to, options),
   );
 
   if (!candidates.length && samples.length) {
@@ -823,7 +887,7 @@ function pickKeyframeSelections(samples, from, to, cues, rows, options) {
     if (best) candidates.push(best);
   }
 
-  return dedupeKeyframeCandidates(candidates, maxCount, options);
+  return dedupeKeyframeCandidates(candidates, maxCount, options, samples);
 }
 
 async function captureKeyframes(video, keyframeSelections, cues, options) {
