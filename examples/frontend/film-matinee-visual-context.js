@@ -28,6 +28,17 @@ const DEFAULTS = {
   microEventSensitivity: 1.6,
   microEventLookaheadSec: 2,
   minMicroKeyframeGapSec: 2,
+  maxMicroEventKeyframesPerSheet: 6,
+  regionalGrid: 4,
+  regionalChangeWeight: 0.8,
+  colorIslandThreshold: 60,
+  colorIslandEventWeight: 1.8,
+  colorIslandWindow: 2,
+  maxKeyframeGapSec: 45,
+  maxGapKeyframesPerSheet: 4,
+  actionGapSec: 20,
+  actionGapMinActivity: 0.45,
+  maxActionCoverageKeyframesPerSheet: 4,
   lowInfoLuma: 0.035,
   highInfoLuma: 0.97,
   maxAnchorDistanceSec: 6,
@@ -272,7 +283,7 @@ function rgbSaturation(r, g, b) {
   return max <= 0 ? 0 : (max - min) / max;
 }
 
-function visualStatsFromVideo(video, canvas, ctx) {
+function visualStatsFromVideo(video, canvas, ctx, options) {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
   let r = 0;
@@ -283,12 +294,25 @@ function visualStatsFromVideo(video, canvas, ctx) {
   let saturationSum = 0;
   const lumas = [];
   const count = data.length / 4;
+  const grid = Math.max(1, Math.floor(Number(options.regionalGrid) || DEFAULTS.regionalGrid));
+  const tiles = Array.from({ length: grid * grid }, () => ({ r: 0, g: 0, b: 0, luma: 0, count: 0 }));
 
   for (let i = 0; i < data.length; i += 4) {
     const pr = data[i];
     const pg = data[i + 1];
     const pb = data[i + 2];
+    const pixel = i / 4;
+    const py = Math.floor(pixel / canvas.width);
+    const px = pixel - py * canvas.width;
+    const tileX = Math.min(grid - 1, Math.floor((px * grid) / canvas.width));
+    const tileY = Math.min(grid - 1, Math.floor((py * grid) / canvas.height));
+    const tile = tiles[tileY * grid + tileX];
     const y = (0.2126 * pr + 0.7152 * pg + 0.0722 * pb) / 255;
+    tile.r += pr;
+    tile.g += pg;
+    tile.b += pb;
+    tile.luma += y;
+    tile.count += 1;
     r += pr;
     g += pg;
     b += pb;
@@ -322,16 +346,72 @@ function visualStatsFromVideo(video, canvas, ctx) {
     contrast: Math.sqrt(variance),
     edge: edgeCount ? edge / edgeCount : 0,
     saturation: saturationSum / count,
+    tiles: tiles.map((tile) => {
+      const tileCount = Math.max(1, tile.count);
+      return {
+        rgb: [Math.round(tile.r / tileCount), Math.round(tile.g / tileCount), Math.round(tile.b / tileCount)],
+        luma: tile.luma / tileCount,
+      };
+    }),
   };
+}
+
+function regionalChange(current, previous) {
+  const count = Math.min(current?.length || 0, previous?.length || 0);
+  if (!count) return { delta: 0, deltaAvg: 0, lumaDelta: 0, change: 0 };
+  const colorDeltas = [];
+  const lumaDeltas = [];
+  for (let index = 0; index < count; index += 1) {
+    colorDeltas.push(colorDistance(current[index].rgb, previous[index].rgb));
+    lumaDeltas.push(Math.abs(current[index].luma - previous[index].luma));
+  }
+  const delta = Math.max(...colorDeltas);
+  const deltaAvg = average(colorDeltas);
+  const lumaDelta = Math.max(...lumaDeltas);
+  return {
+    delta,
+    deltaAvg,
+    lumaDelta,
+    change: 0.7 * delta + 0.25 * deltaAvg + 120 * lumaDelta,
+  };
+}
+
+function averageRgb(samples) {
+  if (!samples.length) return [0, 0, 0];
+  return [
+    Math.round(average(samples.map((sample) => sample.rgb[0]))),
+    Math.round(average(samples.map((sample) => sample.rgb[1]))),
+    Math.round(average(samples.map((sample) => sample.rgb[2]))),
+  ];
+}
+
+function annotateColorIslands(samples, options) {
+  const windowSize = Math.max(1, Math.floor(Number(options.colorIslandWindow) || DEFAULTS.colorIslandWindow));
+  for (const sample of samples) sample.colorIsland = 0;
+  if (samples.length < windowSize * 2 + 1) return;
+  for (let index = windowSize; index < samples.length - windowSize; index += 1) {
+    const before = averageRgb(samples.slice(index - windowSize, index));
+    const after = averageRgb(samples.slice(index + 1, index + 1 + windowSize));
+    samples[index].colorIsland = Math.min(
+      colorDistance(samples[index].rgb, before),
+      colorDistance(samples[index].rgb, after),
+    );
+  }
 }
 
 function frameQuality(sample, options) {
   const notBlack = clamp((sample.luma - options.lowInfoLuma) / 0.18, 0, 1);
   const notWhite = clamp((options.highInfoLuma - sample.luma) / 0.18, 0, 1);
-  const lumaScore = Math.min(notBlack, notWhite);
   const contrastScore = clamp(sample.contrast / 0.16, 0, 1);
   const edgeScore = clamp(sample.edge / 0.12, 0, 1);
   const saturationScore = clamp(sample.saturation / 0.35, 0, 1);
+  const detailScore = Math.max(contrastScore, edgeScore);
+  let lumaScore = Math.min(notBlack, notWhite);
+  if (sample.luma < 0.18) {
+    lumaScore = Math.max(lumaScore, 0.55 * detailScore + 0.2 * saturationScore);
+  } else if (sample.luma > 0.82) {
+    lumaScore = Math.max(lumaScore, 0.45 * detailScore);
+  }
   return clamp(
     0.4 * lumaScore + 0.25 * contrastScore + 0.25 * edgeScore + 0.1 * saturationScore,
     0,
@@ -341,7 +421,10 @@ function frameQuality(sample, options) {
 
 function isLowInformationFrame(sample, options) {
   return (
-    sample.luma < options.lowInfoLuma && sample.contrast < 0.025 && sample.edge < 0.02
+    sample.luma < options.lowInfoLuma
+    && sample.contrast < 0.025
+    && sample.edge < 0.02
+    && sample.saturation < 0.08
   ) || (
     sample.luma > options.highInfoLuma && sample.contrast < 0.025 && sample.edge < 0.02
   );
@@ -357,24 +440,31 @@ async function sampleVisualFrames(video, from, to, options) {
 
   for (let t = from; t <= to + 0.001; t += step) {
     await seekVideo(video, t, options);
-    const stats = visualStatsFromVideo(video, colorCanvas, colorCtx);
+    const stats = visualStatsFromVideo(video, colorCanvas, colorCtx, options);
     const prev = samples[samples.length - 1];
     const sample = {
       t: Number(t.toFixed(3)),
       ...stats,
     };
     sample.delta = prev ? colorDistance(sample.rgb, prev.rgb) : 0;
+    const regional = prev ? regionalChange(sample.tiles, prev.tiles) : null;
+    sample.regionalDelta = regional ? regional.delta : 0;
+    sample.regionalDeltaAvg = regional ? regional.deltaAvg : 0;
+    sample.regionalLumaDelta = regional ? regional.lumaDelta : 0;
+    sample.regionalChange = regional ? regional.change : 0;
     sample.change = prev
       ? sample.delta
         + Math.abs(sample.luma - prev.luma) * 220
         + Math.abs(sample.contrast - prev.contrast) * 90
         + Math.abs(sample.edge - prev.edge) * 90
+        + sample.regionalChange * options.regionalChangeWeight
       : 0;
     sample.quality = frameQuality(sample, options);
     sample.lowInformation = isLowInformationFrame(sample, options);
     samples.push(sample);
   }
 
+  annotateColorIslands(samples, options);
   return samples;
 }
 
@@ -393,15 +483,6 @@ function sampleAtOrNear(samples, time) {
 
 function samplesInRange(samples, from, to) {
   return samples.filter((sample) => sample.t >= from - 0.001 && sample.t <= to + 0.001);
-}
-
-function averageRgb(samples) {
-  if (!samples.length) return [0, 0, 0];
-  return [
-    Math.round(average(samples.map((sample) => sample.rgb[0]))),
-    Math.round(average(samples.map((sample) => sample.rgb[1]))),
-    Math.round(average(samples.map((sample) => sample.rgb[2]))),
-  ];
 }
 
 function visualChangeThreshold(samples, options) {
@@ -534,11 +615,17 @@ function chooseMicroEventSamples(samples, from, to, options) {
   });
   const events = [];
   for (const sample of samples.slice(1)) {
-    if (sample.change < threshold) continue;
+    const visualScore = clamp(sample.change / Math.max(1, threshold), 0, 1.4);
+    const colorScore = clamp((sample.colorIsland || 0) / Math.max(1, options.colorIslandThreshold), 0, 1.4);
+    const eventScore = Math.max(visualScore, colorScore);
+    const eventStrength = Math.max(sample.change, (sample.colorIsland || 0) * options.colorIslandEventWeight);
+    if (sample.change < threshold && (sample.colorIsland || 0) < options.colorIslandThreshold) continue;
     if (sample.t < from || sample.t > to) continue;
+    sample.eventStrength = eventStrength;
+    sample.eventScore = eventScore;
     const previous = events[events.length - 1];
     if (previous && sample.t - previous.t < options.minMicroKeyframeGapSec) {
-      if (sample.change > previous.change) events[events.length - 1] = sample;
+      if (eventScore > (previous.eventScore || 0)) events[events.length - 1] = sample;
       continue;
     }
     events.push(sample);
@@ -547,7 +634,7 @@ function chooseMicroEventSamples(samples, from, to, options) {
 }
 
 function pickPostEventKeyframe(eventSample, samples, cues, selectedTimes, options) {
-  const start = eventSample.t + Math.max(0.001, options.sampleStepSec * 0.5);
+  const start = eventSample.t;
   const end = eventSample.t + options.microEventLookaheadSec;
   let candidates = samplesInRange(samples, start, end).filter((sample) => !sample.lowInformation);
   if (!candidates.length) candidates = samplesInRange(samples, eventSample.t, end);
@@ -556,6 +643,7 @@ function pickPostEventKeyframe(eventSample, samples, cues, selectedTimes, option
   const scored = candidates
     .map((sample) => {
       const distancePenalty = clamp((sample.t - eventSample.t) / Math.max(0.001, options.microEventLookaheadSec), 0, 1);
+      const eventBonus = 0.04 + 0.14 * clamp((eventSample.eventScore || 0) / 1.25, 0, 1);
       const diversity = selectedTimes.length
         ? clamp(Math.min(...selectedTimes.map((time) => Math.abs(time - sample.t))) / options.minMicroKeyframeGapSec, 0, 1)
         : 1;
@@ -564,6 +652,7 @@ function pickPostEventKeyframe(eventSample, samples, cues, selectedTimes, option
         score: 0.62 * sample.quality
           + 0.18 * subtitleProximityScore(sample.t, cues, options)
           + 0.14 * diversity
+          + eventBonus
           - 0.12 * distancePenalty
           - (sample.lowInformation ? 0.5 : 0),
         reason: "micro-event",
@@ -575,25 +664,139 @@ function pickPostEventKeyframe(eventSample, samples, cues, selectedTimes, option
   return scored[0] || null;
 }
 
+function pickGapCoverageKeyframes(selected, samples, cues, from, to, options) {
+  const maxGap = Number(options.maxKeyframeGapSec) || 0;
+  const maxAdditions = Math.max(0, Math.floor(Number(options.maxGapKeyframesPerSheet) || 0));
+  if (maxGap <= 0 || maxAdditions <= 0 || !samples.length) return [];
+  const anchors = [from, ...selected.slice().sort((a, b) => a.time - b.time).map((item) => item.time), to];
+  const additions = [];
+
+  for (let index = 0; index < anchors.length - 1; index += 1) {
+    const left = anchors[index];
+    const right = anchors[index + 1];
+    const gap = right - left;
+    if (gap <= maxGap) continue;
+    const gapSlots = Math.max(1, Math.ceil(gap / maxGap) - 1);
+    for (let slot = 0; slot < gapSlots; slot += 1) {
+      if (additions.length >= maxAdditions) return additions;
+      const target = left + gap * ((slot + 1) / (gapSlots + 1));
+      const radius = Math.min(maxGap * 0.45, Math.max(4, gap / (gapSlots + 1) * 0.5));
+      let candidates = samplesInRange(samples, target - radius, target + radius);
+      const useful = candidates.filter((sample) => !sample.lowInformation);
+      candidates = useful.length ? useful : candidates;
+      if (!candidates.length) continue;
+      const segment = { start: left, end: right };
+      const segmentSamples = samplesInRange(samples, left, right);
+      const selectedTimes = [...selected, ...additions].map((item) => item.time);
+      const scored = candidates
+        .map((sample) => {
+          const targetScore = 1 - clamp(Math.abs(sample.t - target) / Math.max(0.001, radius), 0, 1);
+          return {
+            time: sample.t,
+            score: 0.9
+              + 0.2 * representativeScore(sample, segmentSamples.length ? segmentSamples : candidates, cues, selectedTimes, options)
+              + 0.08 * targetScore
+              + 0.08 * subtitleProximityScore(sample.t, cues, options)
+              - (sample.lowInformation ? 0.2 : 0),
+            reason: "gap-coverage",
+            segment,
+          };
+        })
+        .sort((a, b) => b.score - a.score);
+      additions.push(scored[0]);
+    }
+  }
+  return additions;
+}
+
+function actionActivityScore(sample, gapSamples) {
+  const changeRef = Math.max(45, quantile(gapSamples.map((item) => item.change), 0.9));
+  const regionalRef = Math.max(35, quantile(gapSamples.map((item) => item.regionalChange || 0), 0.9));
+  return clamp(
+    0.55 * clamp(sample.change / changeRef, 0, 1)
+    + 0.45 * clamp((sample.regionalChange || 0) / regionalRef, 0, 1),
+    0,
+    1,
+  );
+}
+
+function pickActionCoverageKeyframes(selected, samples, cues, from, to, options) {
+  const actionGap = Number(options.actionGapSec) || 0;
+  const maxAdditions = Math.max(0, Math.floor(Number(options.maxActionCoverageKeyframesPerSheet) || 0));
+  if (actionGap <= 0 || maxAdditions <= 0 || !samples.length) return [];
+  const anchors = [from, ...selected.slice().sort((a, b) => a.time - b.time).map((item) => item.time), to];
+  const additions = [];
+
+  for (let index = 0; index < anchors.length - 1; index += 1) {
+    const left = anchors[index];
+    const right = anchors[index + 1];
+    const gap = right - left;
+    if (gap <= actionGap) continue;
+    const pad = Math.min(4, gap * 0.2);
+    let gapSamples = samplesInRange(samples, left + pad, right - pad);
+    const useful = gapSamples.filter((sample) => !sample.lowInformation);
+    gapSamples = useful.length ? useful : gapSamples;
+    if (!gapSamples.length) continue;
+
+    const selectedTimes = [...selected, ...additions].map((item) => item.time);
+    const segment = { start: left, end: right };
+    const scored = gapSamples
+      .map((sample) => {
+        const activity = actionActivityScore(sample, gapSamples);
+        if (activity < options.actionGapMinActivity) return null;
+        const diversity = selectedTimes.length
+          ? clamp(Math.min(...selectedTimes.map((time) => Math.abs(time - sample.t))) / actionGap, 0, 1)
+          : 1;
+        return {
+          time: sample.t,
+          score: 0.72
+            + 0.22 * activity
+            + 0.12 * sample.quality
+            + 0.08 * diversity
+            + 0.05 * subtitleProximityScore(sample.t, cues, options)
+            - (sample.lowInformation ? 0.2 : 0),
+          reason: "action-coverage",
+          segment,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+    if (scored.length) additions.push(scored[0]);
+    if (additions.length >= maxAdditions) return additions;
+  }
+  return additions;
+}
+
+function dedupeKeyframeCandidates(candidates, maxCount, options) {
+  const deduped = [];
+  for (const item of candidates.sort((a, b) => b.score - a.score)) {
+    if (deduped.length >= maxCount) break;
+    if (deduped.every((existing) => Math.abs(existing.time - item.time) >= Math.max(1, options.minMicroKeyframeGapSec))) {
+      deduped.push(item);
+    }
+  }
+  return deduped.sort((a, b) => a.time - b.time);
+}
+
 function pickKeyframeSelections(samples, from, to, cues, rows, options) {
   const segments = buildVisualSegments(samples, from, to, options);
   const maxByRows = rows.length * Math.max(1, options.keyframesPerRow);
   const maxCount = Math.max(2, Number(options.maxKeyframes) || maxByRows);
-  const selected = [];
+  const candidates = [];
 
   for (const segment of segments) {
-    const pick = pickSegmentKeyframe(segment, samples, cues, selected.map((item) => item.time), options);
-    if (pick) selected.push({ ...pick, segment });
+    const pick = pickSegmentKeyframe(segment, samples, cues, candidates.map((item) => item.time), options);
+    if (pick) candidates.push({ ...pick, segment });
   }
 
-  const selectedTimes = () => selected.map((item) => item.time);
-  for (const eventSample of chooseMicroEventSamples(samples, from, to, options)) {
-    if (selected.length >= maxCount) break;
-    if (selectedTimes().some((time) => Math.abs(time - eventSample.t) < options.minMicroKeyframeGapSec)) continue;
+  const selectedTimes = () => candidates.map((item) => item.time);
+  const microEvents = chooseMicroEventSamples(samples, from, to, options)
+    .sort((a, b) => (b.eventScore || 0) - (a.eventScore || 0))
+    .slice(0, Math.max(0, Math.floor(Number(options.maxMicroEventKeyframesPerSheet) || 0)));
+  for (const eventSample of microEvents) {
     const pick = pickPostEventKeyframe(eventSample, samples, cues, selectedTimes(), options);
     if (!pick) continue;
-    if (selectedTimes().some((time) => Math.abs(time - pick.time) < options.minMicroKeyframeGapSec)) continue;
-    selected.push({
+    candidates.push({
       ...pick,
       segment: {
         start: eventSample.t,
@@ -602,7 +805,13 @@ function pickKeyframeSelections(samples, from, to, cues, rows, options) {
     });
   }
 
-  if (!selected.length && samples.length) {
+  const preliminary = dedupeKeyframeCandidates(candidates, maxCount, options);
+  candidates.push(
+    ...pickGapCoverageKeyframes(preliminary, samples, cues, from, to, options),
+    ...pickActionCoverageKeyframes(preliminary, samples, cues, from, to, options),
+  );
+
+  if (!candidates.length && samples.length) {
     const best = samples
       .map((sample) => ({
         time: sample.t,
@@ -611,18 +820,10 @@ function pickKeyframeSelections(samples, from, to, cues, rows, options) {
         segment: { start: from, end: to },
       }))
       .sort((a, b) => b.score - a.score)[0];
-    if (best) selected.push(best);
+    if (best) candidates.push(best);
   }
 
-  const deduped = [];
-  for (const item of selected.sort((a, b) => b.score - a.score)) {
-    if (deduped.length >= maxCount) break;
-    if (deduped.every((existing) => Math.abs(existing.time - item.time) >= Math.max(1, options.minMicroKeyframeGapSec))) {
-      deduped.push(item);
-    }
-  }
-
-  return deduped.sort((a, b) => a.time - b.time);
+  return dedupeKeyframeCandidates(candidates, maxCount, options);
 }
 
 async function captureKeyframes(video, keyframeSelections, cues, options) {

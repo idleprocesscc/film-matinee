@@ -9,6 +9,7 @@
 ## 现在能做什么
 
 - 批量生成 `film-matinee sheet`：关键帧 + 色带 + 音频 rail + 极短字幕锚点。
+- 关键帧抽取会综合镜头切换、局部色彩变化、短促 micro event、音频瞬态和长动作段覆盖；暗场有纹理/轮廓时不会被简单当作低信息。
 - 把完整字幕作为 sidecar 文本交给 AI，避免把文字全塞进图片。
 - 用 MCP 工具 `film_start` / `film_next` 让 AI 按顺序读 chunk。
 - 用 `film_note` / `film_reply` 写入共享 `annotations.json`，前端 viewer 可实时显示。

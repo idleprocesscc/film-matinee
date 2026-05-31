@@ -261,13 +261,15 @@ def rgb_saturation(r: int, g: int, b: int) -> float:
     return 0.0 if high <= 0 else (high - low) / high
 
 
-def frame_stats(buffer: bytes, width: int, height: int) -> dict:
+def frame_stats(buffer: bytes, width: int, height: int, regional_grid: int = 4) -> dict:
     count = width * height
     r_sum = g_sum = b_sum = 0
     luma_sum = 0.0
     luma_sq = 0.0
     sat_sum = 0.0
     lumas = [0.0] * count
+    grid = max(1, int(regional_grid or 1))
+    tile_sums = [[0.0, 0.0, 0.0, 0.0, 0.0] for _ in range(grid * grid)]
 
     for idx in range(count):
         offset = idx * 3
@@ -275,6 +277,16 @@ def frame_stats(buffer: bytes, width: int, height: int) -> dict:
         g = buffer[offset + 1]
         b = buffer[offset + 2]
         luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        y = idx // width
+        x = idx - y * width
+        tile_x = min(grid - 1, x * grid // width)
+        tile_y = min(grid - 1, y * grid // height)
+        tile = tile_sums[tile_y * grid + tile_x]
+        tile[0] += r
+        tile[1] += g
+        tile[2] += b
+        tile[3] += luma
+        tile[4] += 1
         r_sum += r
         g_sum += g
         b_sum += b
@@ -298,12 +310,20 @@ def frame_stats(buffer: bytes, width: int, height: int) -> dict:
 
     luma_avg = luma_sum / count
     variance = max(0.0, luma_sq / count - luma_avg * luma_avg)
+    tiles = []
+    for tile in tile_sums:
+        tile_count = max(1, tile[4])
+        tiles.append({
+            "rgb": [round(tile[0] / tile_count), round(tile[1] / tile_count), round(tile[2] / tile_count)],
+            "luma": tile[3] / tile_count,
+        })
     return {
         "rgb": [round(r_sum / count), round(g_sum / count), round(b_sum / count)],
         "luma": luma_avg,
         "contrast": math.sqrt(variance),
         "edge": edge / edge_count if edge_count else 0.0,
         "saturation": sat_sum / count,
+        "tiles": tiles,
     }
 
 
@@ -323,13 +343,51 @@ def color_distance(a: list[int], b: list[int]) -> float:
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
 
+def regional_change(current: list[dict], previous: list[dict]) -> dict:
+    count = min(len(current), len(previous))
+    if not count:
+        return {"delta": 0.0, "delta_avg": 0.0, "luma_delta": 0.0, "change": 0.0}
+    color_deltas = [color_distance(current[index]["rgb"], previous[index]["rgb"]) for index in range(count)]
+    luma_deltas = [abs(current[index]["luma"] - previous[index]["luma"]) for index in range(count)]
+    delta = max(color_deltas) if color_deltas else 0.0
+    delta_avg = average(color_deltas)
+    luma_delta = max(luma_deltas) if luma_deltas else 0.0
+    return {
+        "delta": delta,
+        "delta_avg": delta_avg,
+        "luma_delta": luma_delta,
+        "change": 0.7 * delta + 0.25 * delta_avg + 120 * luma_delta,
+    }
+
+
+def annotate_color_islands(samples: list[dict], options: argparse.Namespace) -> None:
+    window = max(1, int(options.color_island_window))
+    for sample in samples:
+        sample["color_island"] = 0.0
+    if len(samples) < window * 2 + 1:
+        return
+    for index in range(window, len(samples) - window):
+        before = average_rgb(samples[index - window:index])
+        after = average_rgb(samples[index + 1:index + 1 + window])
+        score = min(
+            color_distance(samples[index]["rgb"], before),
+            color_distance(samples[index]["rgb"], after),
+        )
+        samples[index]["color_island"] = score
+
+
 def sample_frame_quality(sample: dict, options: argparse.Namespace) -> float:
     not_black = clamp((sample["luma"] - options.low_info_luma) / 0.18, 0, 1)
     not_white = clamp((options.high_info_luma - sample["luma"]) / 0.18, 0, 1)
-    luma_score = min(not_black, not_white)
     contrast_score = clamp(sample["contrast"] / 0.16, 0, 1)
     edge_score = clamp(sample["edge"] / 0.12, 0, 1)
     saturation_score = clamp(sample["saturation"] / 0.35, 0, 1)
+    detail_score = max(contrast_score, edge_score)
+    luma_score = min(not_black, not_white)
+    if sample["luma"] < 0.18:
+        luma_score = max(luma_score, 0.55 * detail_score + 0.2 * saturation_score)
+    elif sample["luma"] > 0.82:
+        luma_score = max(luma_score, 0.45 * detail_score)
     return clamp(0.4 * luma_score + 0.25 * contrast_score + 0.25 * edge_score + 0.1 * saturation_score, 0, 1)
 
 
@@ -338,6 +396,7 @@ def is_low_information(sample: dict, options: argparse.Namespace) -> bool:
         sample["luma"] < options.low_info_luma
         and sample["contrast"] < 0.025
         and sample["edge"] < 0.02
+        and sample["saturation"] < 0.08
     ) or (
         sample["luma"] > options.high_info_luma
         and sample["contrast"] < 0.025
@@ -392,26 +451,37 @@ def sample_visual_frames(video: Path, start: float, end: float, options: argpars
             break
         sample_index = index // frame_bytes
         t = min(end, start + sample_index * options.sample_step_sec)
-        stats = frame_stats(chunk, width, height)
+        stats = frame_stats(chunk, width, height, options.regional_grid)
         sample = {"t": round(t, 3), **stats}
         sample["motion"] = pixel_motion(chunk, previous_buffer)
         if previous:
+            regional = regional_change(sample["tiles"], previous["tiles"])
             sample["delta"] = color_distance(sample["rgb"], previous["rgb"])
+            sample["regional_delta"] = regional["delta"]
+            sample["regional_delta_avg"] = regional["delta_avg"]
+            sample["regional_luma_delta"] = regional["luma_delta"]
+            sample["regional_change"] = regional["change"]
             sample["change"] = (
                 sample["delta"]
                 + abs(sample["luma"] - previous["luma"]) * 220
                 + abs(sample["contrast"] - previous["contrast"]) * 90
                 + abs(sample["edge"] - previous["edge"]) * 90
                 + sample["motion"] * options.motion_weight
+                + sample["regional_change"] * options.regional_change_weight
             )
         else:
             sample["delta"] = 0.0
+            sample["regional_delta"] = 0.0
+            sample["regional_delta_avg"] = 0.0
+            sample["regional_luma_delta"] = 0.0
+            sample["regional_change"] = 0.0
             sample["change"] = 0.0
         sample["quality"] = sample_frame_quality(sample, options)
         sample["low_information"] = is_low_information(sample, options)
         samples.append(sample)
         previous = sample
         previous_buffer = chunk
+    annotate_color_islands(samples, options)
     return samples
 
 
@@ -563,12 +633,29 @@ def choose_micro_event_samples(samples: list[dict], start: float, end: float, op
     threshold = visual_change_threshold(samples, options, sensitivity=options.micro_event_sensitivity)
     events: list[dict] = []
     for sample in samples[1:]:
-        if sample["change"] < threshold:
+        visual_score = clamp(sample["change"] / max(1.0, threshold), 0.0, 1.4)
+        color_score = clamp(sample.get("color_island", 0.0) / max(1.0, options.color_island_threshold), 0.0, 1.4)
+        audio_score = sample.get("audio_event", 0.0) if options.audio_event_weight > 0 else 0.0
+        event_score = max(visual_score, color_score, audio_score)
+        if audio_score and max(visual_score, color_score) > 0.4:
+            event_score += 0.2 * audio_score
+        event_strength = max(
+            sample["change"],
+            sample.get("color_island", 0.0) * options.color_island_event_weight,
+            audio_score * options.audio_event_weight,
+        )
+        if (
+            sample["change"] < threshold
+            and sample.get("color_island", 0.0) < options.color_island_threshold
+            and audio_score < options.audio_event_threshold
+        ):
             continue
         if sample["t"] < start or sample["t"] > end:
             continue
+        sample["event_strength"] = event_strength
+        sample["event_score"] = event_score
         if events and sample["t"] - events[-1]["t"] < options.min_micro_keyframe_gap_sec:
-            if sample["change"] > events[-1]["change"]:
+            if event_score > events[-1].get("event_score", 0.0):
                 events[-1] = sample
             continue
         events.append(sample)
@@ -576,7 +663,7 @@ def choose_micro_event_samples(samples: list[dict], start: float, end: float, op
 
 
 def pick_post_event_keyframe(event_sample: dict, samples: list[dict], cues: list[Cue], selected_times: list[float], options: argparse.Namespace) -> Selection | None:
-    start = event_sample["t"] + max(0.001, options.sample_step_sec * 0.5)
+    start = event_sample["t"]
     end = event_sample["t"] + options.micro_event_lookahead_sec
     candidates = [sample for sample in samples_in_range(samples, start, end) if not sample["low_information"]]
     if not candidates:
@@ -587,6 +674,8 @@ def pick_post_event_keyframe(event_sample: dict, samples: list[dict], cues: list
     scored: list[Selection] = []
     for sample in candidates:
         distance_penalty = clamp((sample["t"] - event_sample["t"]) / max(0.001, options.micro_event_lookahead_sec), 0, 1)
+        event_score = max(event_sample.get("event_score", 0.0), sample.get("audio_event", 0.0))
+        event_bonus = 0.04 + 0.14 * clamp(event_score / 1.25, 0.0, 1.0)
         diversity = (
             clamp(min(abs(time - sample["t"]) for time in selected_times) / options.min_micro_keyframe_gap_sec, 0, 1)
             if selected_times
@@ -596,6 +685,7 @@ def pick_post_event_keyframe(event_sample: dict, samples: list[dict], cues: list
             0.62 * sample["quality"]
             + 0.18 * subtitle_proximity_score(sample["t"], cues, options)
             + 0.14 * diversity
+            + event_bonus
             - 0.12 * distance_penalty
             - (0.5 if sample["low_information"] else 0)
         )
@@ -603,44 +693,174 @@ def pick_post_event_keyframe(event_sample: dict, samples: list[dict], cues: list
     return sorted(scored, key=lambda item: item.score, reverse=True)[0] if scored else None
 
 
-def pick_keyframe_selections(samples: list[dict], start: float, end: float, cues: list[Cue], options: argparse.Namespace) -> list[Selection]:
-    segments = build_visual_segments(samples, start, end, options)
-    max_count = max(2, int(options.max_keyframes))
-    selected: list[Selection] = []
+def pick_gap_coverage_keyframes(
+    selected: list[Selection],
+    samples: list[dict],
+    cues: list[Cue],
+    start: float,
+    end: float,
+    options: argparse.Namespace,
+) -> list[Selection]:
+    max_gap = float(options.max_keyframe_gap_sec)
+    if max_gap <= 0 or not samples:
+        return []
+    max_additions = max(0, int(options.max_gap_keyframes_per_sheet))
+    if max_additions <= 0:
+        return []
 
-    for segment in segments:
-        pick = pick_segment_keyframe(segment, samples, cues, [item.time for item in selected], options)
-        if pick:
-            selected.append(pick)
-
-    for event_sample in choose_micro_event_samples(samples, start, end, options):
-        if len(selected) >= max_count:
-            break
-        selected_times = [item.time for item in selected]
-        if any(abs(time - event_sample["t"]) < options.min_micro_keyframe_gap_sec for time in selected_times):
+    anchors = [start, *[item.time for item in sorted(selected, key=lambda item: item.time)], end]
+    additions: list[Selection] = []
+    for left, right in zip(anchors, anchors[1:]):
+        gap = right - left
+        if gap <= max_gap:
             continue
-        pick = pick_post_event_keyframe(event_sample, samples, cues, selected_times, options)
-        if not pick:
-            continue
-        if any(abs(time - pick.time) < options.min_micro_keyframe_gap_sec for time in selected_times):
-            continue
-        selected.append(pick)
+        gap_slots = max(1, math.ceil(gap / max_gap) - 1)
+        for slot in range(gap_slots):
+            if len(additions) >= max_additions:
+                return additions
+            target = left + gap * ((slot + 1) / (gap_slots + 1))
+            radius = min(max_gap * 0.45, max(4.0, gap / (gap_slots + 1) * 0.5))
+            candidates = samples_in_range(samples, target - radius, target + radius)
+            useful = [sample for sample in candidates if not sample["low_information"]]
+            candidates = useful or candidates
+            if not candidates:
+                continue
+            segment = Segment(left, right, 0.0)
+            segment_samples = samples_in_range(samples, left, right) or candidates
+            scored = []
+            selected_times = [item.time for item in selected] + [item.time for item in additions]
+            for sample in candidates:
+                target_score = 1 - clamp(abs(sample["t"] - target) / max(0.001, radius), 0, 1)
+                score = (
+                    0.9
+                    + 0.2 * representative_score(sample, segment_samples, cues, selected_times, options)
+                    + 0.08 * target_score
+                    + 0.08 * subtitle_proximity_score(sample["t"], cues, options)
+                    - (0.2 if sample["low_information"] else 0)
+                )
+                scored.append(Selection(sample["t"], score, "gap-coverage", segment))
+            if scored:
+                additions.append(sorted(scored, key=lambda item: item.score, reverse=True)[0])
+    return additions
 
-    if not selected and samples:
-        best = sorted(
-            samples,
-            key=lambda sample: sample["quality"] - (0.5 if sample["low_information"] else 0),
-            reverse=True,
-        )[0]
-        selected.append(Selection(best["t"], best["quality"], "fallback-quality", Segment(start, end)))
 
+def action_activity_score(sample: dict, gap_samples: list[dict], options: argparse.Namespace) -> float:
+    change_ref = max(45.0, quantile([item["change"] for item in gap_samples], 0.9))
+    regional_ref = max(35.0, quantile([item.get("regional_change", 0.0) for item in gap_samples], 0.9))
+    motion_ref = max(0.04, quantile([item.get("motion", 0.0) for item in gap_samples], 0.9))
+    return clamp(
+        0.35 * clamp(sample["change"] / change_ref, 0, 1)
+        + 0.35 * clamp(sample.get("regional_change", 0.0) / regional_ref, 0, 1)
+        + 0.3 * clamp(sample.get("motion", 0.0) / motion_ref, 0, 1),
+        0,
+        1,
+    )
+
+
+def pick_action_coverage_keyframes(
+    selected: list[Selection],
+    samples: list[dict],
+    cues: list[Cue],
+    start: float,
+    end: float,
+    options: argparse.Namespace,
+) -> list[Selection]:
+    action_gap = float(options.action_gap_sec)
+    if action_gap <= 0 or not samples:
+        return []
+    max_additions = max(0, int(options.max_action_coverage_keyframes_per_sheet))
+    if max_additions <= 0:
+        return []
+
+    anchors = [start, *[item.time for item in sorted(selected, key=lambda item: item.time)], end]
+    additions: list[Selection] = []
+    for left, right in zip(anchors, anchors[1:]):
+        gap = right - left
+        if gap <= action_gap:
+            continue
+        pad = min(4.0, gap * 0.2)
+        gap_samples = samples_in_range(samples, left + pad, right - pad)
+        useful = [sample for sample in gap_samples if not sample["low_information"]]
+        gap_samples = useful or gap_samples
+        if not gap_samples:
+            continue
+
+        scored: list[Selection] = []
+        selected_times = [item.time for item in selected] + [item.time for item in additions]
+        segment = Segment(left, right, 0.0)
+        for sample in gap_samples:
+            activity = action_activity_score(sample, gap_samples, options)
+            if activity < options.action_gap_min_activity:
+                continue
+            diversity = (
+                clamp(min(abs(time - sample["t"]) for time in selected_times) / action_gap, 0, 1)
+                if selected_times
+                else 1
+            )
+            score = (
+                0.72
+                + 0.22 * activity
+                + 0.12 * sample["quality"]
+                + 0.08 * diversity
+                + 0.05 * subtitle_proximity_score(sample["t"], cues, options)
+                - (0.2 if sample["low_information"] else 0)
+            )
+            scored.append(Selection(sample["t"], score, "action-coverage", segment))
+        if scored:
+            additions.append(sorted(scored, key=lambda item: item.score, reverse=True)[0])
+            if len(additions) >= max_additions:
+                return additions
+    return additions
+
+
+def dedupe_keyframe_candidates(candidates: list[Selection], max_count: int, options: argparse.Namespace) -> list[Selection]:
     deduped: list[Selection] = []
-    for item in sorted(selected, key=lambda sel: sel.score, reverse=True):
+    for item in sorted(candidates, key=lambda sel: sel.score, reverse=True):
         if len(deduped) >= max_count:
             break
         if all(abs(existing.time - item.time) >= max(1, options.min_micro_keyframe_gap_sec) for existing in deduped):
             deduped.append(item)
     return sorted(deduped, key=lambda item: item.time)
+
+
+def pick_keyframe_selections(samples: list[dict], start: float, end: float, cues: list[Cue], options: argparse.Namespace) -> list[Selection]:
+    segments = build_visual_segments(samples, start, end, options)
+    max_count = max(2, int(options.max_keyframes))
+    candidates: list[Selection] = []
+
+    for segment in segments:
+        pick = pick_segment_keyframe(segment, samples, cues, [item.time for item in candidates], options)
+        if pick:
+            candidates.append(pick)
+
+    micro_events = sorted(
+        choose_micro_event_samples(samples, start, end, options),
+        key=lambda sample: sample.get("event_score", 0.0),
+        reverse=True,
+    )
+    for event_sample in micro_events[: max(0, int(options.max_micro_event_keyframes_per_sheet))]:
+        selected_times = [item.time for item in candidates]
+        pick = pick_post_event_keyframe(event_sample, samples, cues, selected_times, options)
+        if not pick:
+            continue
+        candidates.append(pick)
+
+    preliminary = dedupe_keyframe_candidates(candidates, max_count, options)
+    coverage = [
+        *pick_gap_coverage_keyframes(preliminary, samples, cues, start, end, options),
+        *pick_action_coverage_keyframes(preliminary, samples, cues, start, end, options),
+    ]
+    candidates.extend(coverage)
+
+    if not candidates and samples:
+        best = sorted(
+            samples,
+            key=lambda sample: sample["quality"] - (0.5 if sample["low_information"] else 0),
+            reverse=True,
+        )[0]
+        candidates.append(Selection(best["t"], best["quality"], "fallback-quality", Segment(start, end)))
+
+    return dedupe_keyframe_candidates(candidates, max_count, options)
 
 
 def selection_end(selection: Selection, fallback: float) -> float:
@@ -702,7 +922,7 @@ def capture_frame(video: Path, time: float, width: int, height: int) -> Image.Im
 
 
 def sample_audio_levels(video: Path, start: float, end: float, options: argparse.Namespace) -> list[dict]:
-    if not options.audio_rail:
+    if not options.audio_rail and options.audio_event_weight <= 0:
         return []
     duration = max(0.001, end - start)
     sample_rate = max(20, int(options.audio_sample_rate))
@@ -743,12 +963,53 @@ def sample_audio_levels(video: Path, start: float, end: float, options: argparse
         if not chunk:
             continue
         rms = math.sqrt(sum(value * value for value in chunk) / len(chunk)) / 32768
-        level = clamp(math.sqrt(rms) * options.audio_gain, 0, 1)
+        energy = math.sqrt(rms) * options.audio_gain
+        level = clamp(energy, 0, 1)
         levels.append({
             "t": round(start + (index / sample_rate), 3),
             "level": round(level, 4),
+            "energy": round(energy, 4),
         })
     return levels
+
+
+def annotate_audio_events(samples: list[dict], audio_levels: list[dict], options: argparse.Namespace) -> None:
+    for sample in samples:
+        sample["audio_level"] = 0.0
+        sample["audio_event"] = 0.0
+    if not samples or not audio_levels or options.audio_event_weight <= 0:
+        return
+
+    levels = sorted(audio_levels, key=lambda item: item["t"])
+    window = max(0.05, float(options.audio_event_window_sec))
+    context = max(window * 2, float(options.audio_event_context_sec))
+
+    def event_level(item: dict) -> float:
+        return item.get("energy", item["level"])
+
+    for sample in samples:
+        t = sample["t"]
+        near = [event_level(item) for item in levels if abs(item["t"] - t) <= window]
+        if not near:
+            nearest = min(levels, key=lambda item: abs(item["t"] - t))
+            near = [event_level(nearest)]
+
+        local = [event_level(item) for item in levels if abs(item["t"] - t) <= context]
+        if not local:
+            local = near
+
+        peak = max(near)
+        rendered_peak = min(peak, 1.0)
+        baseline = quantile(local, 0.5)
+        high = quantile(local, 0.9)
+        dynamic = max(0.08, high - baseline)
+        transient = max(0.0, peak - baseline)
+        score = clamp(transient / dynamic, 0.0, 1.0)
+        if rendered_peak < options.audio_event_min_level:
+            score = 0.0
+
+        sample["audio_level"] = round(rendered_peak, 4)
+        sample["audio_event"] = round(score, 4)
 
 
 def font_candidates(bold: bool = False) -> list[str]:
@@ -1080,6 +1341,8 @@ def process_sheet(
     candidate_end = min(max_end, start + options.max_sheet_sec)
     candidate_cues = cues_in_range(all_cues, start, candidate_end)
     samples = sample_visual_frames(video, start, candidate_end, options)
+    candidate_audio_levels = sample_audio_levels(video, start, candidate_end, options)
+    annotate_audio_events(samples, candidate_audio_levels, options)
     analysis_max = max(
         options.max_keyframes,
         options.target_keyframes + 8,
@@ -1090,15 +1353,20 @@ def process_sheet(
     end = choose_adaptive_end(start, candidate_end, candidate_selections, options)
     cues = cues_in_range(candidate_cues, start, end)
     final_samples = samples_in_range(samples, start, end)
+    audio_levels = [
+        item for item in candidate_audio_levels
+        if item["t"] >= start - 0.001 and item["t"] <= end + 0.001
+    ]
+    annotate_audio_events(final_samples, audio_levels, options)
     selections = pick_keyframe_selections(final_samples, start, end, cues, options)
-    audio_levels = sample_audio_levels(video, start, end, options) if not options.dry_run else []
+    render_audio_levels = audio_levels if not options.dry_run else []
 
     sheet_path = out_dir / "sheets" / f"sheet-{index:03d}.png"
     sidecar_path = out_dir / "sidecars" / f"sheet-{index:03d}.txt"
     keyframes = []
     if not options.dry_run:
         keyframes = build_keyframes(video, selections, cues, options)
-        image = render_sheet(title, start, end, final_samples, audio_levels, keyframes, cues, options)
+        image = render_sheet(title, start, end, final_samples, render_audio_levels, keyframes, cues, options)
         sheet_path.parent.mkdir(parents=True, exist_ok=True)
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         image.save(sheet_path)
@@ -1200,6 +1468,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--micro-event-sensitivity", type=float, default=1.6)
     parser.add_argument("--micro-event-lookahead-sec", type=float, default=2.0)
     parser.add_argument("--min-micro-keyframe-gap-sec", type=float, default=2.0)
+    parser.add_argument("--max-micro-event-keyframes-per-sheet", type=int, default=6)
+    parser.add_argument("--regional-grid", type=int, default=4, help="Grid size for local visual-change detection.")
+    parser.add_argument("--regional-change-weight", type=float, default=0.8, help="Weight for local region color/luma changes.")
+    parser.add_argument("--color-island-threshold", type=float, default=60.0, help="Local color-band anomaly threshold for event candidates.")
+    parser.add_argument("--color-island-event-weight", type=float, default=1.8, help="Weight used to rank color-island event candidates.")
+    parser.add_argument("--color-island-window", type=int, default=2, help="Neighbor samples used to detect short color islands.")
+    parser.add_argument("--max-keyframe-gap-sec", type=float, default=45.0, help="Add coverage frames when selected keyframes leave longer gaps.")
+    parser.add_argument("--max-gap-keyframes-per-sheet", type=int, default=4)
+    parser.add_argument("--action-gap-sec", type=float, default=20.0, help="Add motion-aware candidates when final keyframes leave active gaps longer than this.")
+    parser.add_argument("--action-gap-min-activity", type=float, default=0.45, help="Minimum normalized activity score for motion-aware gap candidates.")
+    parser.add_argument("--max-action-coverage-keyframes-per-sheet", type=int, default=4)
     parser.add_argument("--motion-weight", type=float, default=260.0)
     parser.add_argument("--low-info-luma", type=float, default=0.035)
     parser.add_argument("--high-info-luma", type=float, default=0.97)
@@ -1222,6 +1501,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-step-sec", type=float, default=0.25)
     parser.add_argument("--audio-rail-height", type=int, default=12)
     parser.add_argument("--audio-gain", type=float, default=2.2)
+    parser.add_argument("--audio-event-weight", type=float, default=130.0, help="Weight for audio transients as keyframe candidates. Use 0 to disable.")
+    parser.add_argument("--audio-event-threshold", type=float, default=0.55, help="Normalized transient score needed for audio-only event candidates.")
+    parser.add_argument("--audio-event-window-sec", type=float, default=0.5, help="Audio window around each visual sample.")
+    parser.add_argument("--audio-event-context-sec", type=float, default=2.0, help="Local context used to score audio transients.")
+    parser.add_argument("--audio-event-min-level", type=float, default=0.12, help="Ignore audio transient candidates below this rendered level.")
     return parser.parse_args()
 
 
