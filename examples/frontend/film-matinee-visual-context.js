@@ -42,6 +42,8 @@ const DEFAULTS = {
   coverageColorShiftThreshold: 72,
   similarKeyframeWindowSec: 6,
   similarKeyframeDistance: 0.06,
+  nearDuplicateWindowSec: 5,
+  nearDuplicateDistance: 0.11,
   lowInfoLuma: 0.035,
   highInfoLuma: 0.97,
   maxAnchorDistanceSec: 6,
@@ -821,11 +823,16 @@ function keyframeVisualDistance(left, right) {
 }
 
 function selectionsAreVisuallySimilar(left, right, samples, options) {
-  if (Math.abs(left.time - right.time) > options.similarKeyframeWindowSec) return false;
+  const secondsApart = Math.abs(left.time - right.time);
+  if (secondsApart > options.similarKeyframeWindowSec) return false;
   const leftSample = sampleAtOrNear(samples, left.time);
   const rightSample = sampleAtOrNear(samples, right.time);
   if (!leftSample || !rightSample) return false;
-  return keyframeVisualDistance(leftSample, rightSample) <= options.similarKeyframeDistance;
+  let threshold = options.similarKeyframeDistance;
+  if (secondsApart <= options.nearDuplicateWindowSec) {
+    threshold = Math.max(threshold, options.nearDuplicateDistance);
+  }
+  return keyframeVisualDistance(leftSample, rightSample) <= threshold;
 }
 
 function dedupeKeyframeCandidates(candidates, maxCount, options, samples = null) {

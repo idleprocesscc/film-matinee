@@ -876,13 +876,17 @@ def selections_are_visually_similar(
     samples: list[dict],
     options: argparse.Namespace,
 ) -> bool:
-    if abs(left.time - right.time) > options.similar_keyframe_window_sec:
+    seconds_apart = abs(left.time - right.time)
+    if seconds_apart > options.similar_keyframe_window_sec:
         return False
     left_sample = sample_at_or_near(samples, left.time)
     right_sample = sample_at_or_near(samples, right.time)
     if not left_sample or not right_sample:
         return False
-    return keyframe_visual_distance(left_sample, right_sample) <= options.similar_keyframe_distance
+    threshold = options.similar_keyframe_distance
+    if seconds_apart <= options.near_duplicate_window_sec:
+        threshold = max(threshold, options.near_duplicate_distance)
+    return keyframe_visual_distance(left_sample, right_sample) <= threshold
 
 
 def dedupe_keyframe_candidates(
@@ -1632,6 +1636,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coverage-color-shift-threshold", type=float, default=72.0, help="RGB distance for color-shift coverage inside long gaps.")
     parser.add_argument("--similar-keyframe-window-sec", type=float, default=6.0, help="Drop near-duplicate keyframes within this time window.")
     parser.add_argument("--similar-keyframe-distance", type=float, default=0.06, help="Visual distance threshold for near-duplicate keyframes.")
+    parser.add_argument("--near-duplicate-window-sec", type=float, default=5.0, help="Use a more permissive duplicate threshold for very close keyframes.")
+    parser.add_argument("--near-duplicate-distance", type=float, default=0.11, help="Visual distance threshold for very close near-duplicate keyframes.")
     parser.add_argument("--motion-weight", type=float, default=260.0)
     parser.add_argument("--low-info-luma", type=float, default=0.035)
     parser.add_argument("--high-info-luma", type=float, default=0.97)
