@@ -338,7 +338,13 @@ def _notes_text(manifest_path: Path, chunk_index: int) -> str:
     return "\n".join(lines)
 
 
-def _chunk_text(manifest_path: Path, manifest: dict[str, Any], sheet: dict[str, Any], cursor_after: int | None = None) -> str:
+def _chunk_text(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    sheet: dict[str, Any],
+    cursor_after: int | None = None,
+    include_guide: bool = True,
+) -> str:
     root = manifest_path.parent
     sheets = manifest.get("sheets", [])
     start, end = sheet.get("time_range", [0, 0])
@@ -361,7 +367,7 @@ def _chunk_text(manifest_path: Path, manifest: dict[str, Any], sheet: dict[str, 
         else:
             next_line = "next: end of available generated sheets"
 
-    return "\n".join([
+    lines = [
         "[film-matinee-chunk]",
         f"title: {manifest.get('title', 'Film')}",
         f"manifest: {manifest_path}",
@@ -370,18 +376,27 @@ def _chunk_text(manifest_path: Path, manifest: dict[str, Any], sheet: dict[str, 
         f"duration_seconds: {sheet.get('duration')}",
         f"keyframes: {' | '.join(keyframes)}",
         next_line,
-        "",
-        _viewing_guide(manifest, sheet),
+    ]
+    if include_guide:
+        lines.extend(["", _viewing_guide(manifest, sheet)])
+    lines.extend([
         "",
         _notes_text(manifest_path, index),
         "",
         sidecar,
         "[/film-matinee-chunk]",
-    ]).strip()
+    ])
+    return "\n".join(lines).strip()
 
 
-def _chunk_response(manifest_path: Path, manifest: dict[str, Any], sheet: dict[str, Any], cursor_after: int | None = None) -> list[Any]:
-    text = _chunk_text(manifest_path, manifest, sheet, cursor_after)
+def _chunk_response(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    sheet: dict[str, Any],
+    cursor_after: int | None = None,
+    include_guide: bool = True,
+) -> list[Any]:
+    text = _chunk_text(manifest_path, manifest, sheet, cursor_after, include_guide)
     image = _sheet_image(manifest_path.parent, sheet)
     if image:
         return [text, image]
@@ -623,7 +638,7 @@ def film_next(manifest_path: str) -> list[Any]:
         raise ValueError("manifest has no sheets")
     cursor = min(_cursor(path), len(sheets) - 1)
     _set_cursor(path, cursor + 1)
-    return _chunk_response(path, manifest, sheets[cursor], cursor_after=cursor + 1)
+    return _chunk_response(path, manifest, sheets[cursor], cursor_after=cursor + 1, include_guide=cursor == 0)
 
 
 @mcp.tool(structured_output=False)

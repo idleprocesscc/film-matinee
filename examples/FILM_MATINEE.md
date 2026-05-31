@@ -53,7 +53,7 @@ python3 tools/generate_film_matinee_sheets.py \
 - `film_reply(manifest_path, note_id, text, author="user")`：把聊天回复挂到某条批注下。
 - `film_notes(manifest_path, chunk_index=None)`：读批注。
 
-每个 chunk 包里会带 `[viewing-guide]`，提醒 AI：
+`film_start` 和显式 `film_chunk` 返回时会带 `[viewing-guide]`，提醒 AI：
 
 - 这是被压缩成 sheet 的电影时间，不是一张普通信息图。
 - 按从左到右、从上到下的顺序线性观看。
@@ -62,6 +62,8 @@ python3 tools/generate_film_matinee_sheets.py \
 - 音频 rail 在 chunk 内归一化，只比较这一节内部的强弱。
 - 关键帧下方短句只是语义锚点，完整字幕以 sidecar 为准。
 - 有值得保留的观察时可以碎碎念或用 `film_note` 写入批注；没有也可以安静看完继续下一段。
+
+连续调用 `film_next` 时会省略这段完整 tips，避免正常观影流里反复打断。
 
 ### 让 Claude 直接导入
 
