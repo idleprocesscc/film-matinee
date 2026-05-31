@@ -746,6 +746,66 @@ def pick_gap_coverage_keyframes(
     return additions
 
 
+def pick_boundary_coverage_keyframes(
+    selected: list[Selection],
+    samples: list[dict],
+    cues: list[Cue],
+    start: float,
+    end: float,
+    options: argparse.Namespace,
+) -> list[Selection]:
+    boundary_gap = float(options.boundary_keyframe_gap_sec)
+    if boundary_gap <= 0 or not samples or not selected:
+        return []
+    max_additions = max(0, int(options.max_boundary_coverage_keyframes_per_sheet))
+    if max_additions <= 0:
+        return []
+
+    ordered = sorted(selected, key=lambda item: item.time)
+    gaps = [
+        (start, ordered[0].time, "boundary-start"),
+        (ordered[-1].time, end, "boundary-end"),
+    ]
+    additions: list[Selection] = []
+    for left, right, reason in gaps:
+        gap = right - left
+        if gap <= boundary_gap:
+            continue
+        target = left + gap * 0.5
+        radius = min(max(4.0, boundary_gap * 0.6), max(4.0, gap * 0.45))
+        candidates = samples_in_range(samples, target - radius, target + radius)
+        useful = [sample for sample in candidates if not sample["low_information"]]
+        candidates = useful or candidates
+        if not candidates:
+            continue
+        segment = Segment(left, right, 0.0)
+        segment_samples = samples_in_range(samples, left, right) or candidates
+        selected_times = [item.time for item in selected] + [item.time for item in additions]
+        scored: list[Selection] = []
+        for sample in candidates:
+            target_score = 1 - clamp(abs(sample["t"] - target) / max(0.001, radius), 0, 1)
+            diversity = (
+                clamp(min(abs(time - sample["t"]) for time in selected_times) / boundary_gap, 0, 1)
+                if selected_times
+                else 1
+            )
+            score = (
+                1.16
+                + 0.16 * target_score
+                + 0.14 * representative_score(sample, segment_samples, cues, selected_times, options)
+                + 0.08 * sample["quality"]
+                + 0.06 * diversity
+                + 0.04 * subtitle_proximity_score(sample["t"], cues, options)
+                - (0.18 if sample["low_information"] else 0)
+            )
+            scored.append(Selection(sample["t"], score, reason, segment))
+        if scored:
+            additions.append(sorted(scored, key=lambda item: item.score, reverse=True)[0])
+            if len(additions) >= max_additions:
+                return additions
+    return additions
+
+
 def gap_activity_components(
     sample: dict,
     gap_samples: list[dict],
@@ -934,9 +994,12 @@ def pick_keyframe_selections(samples: list[dict], start: float, end: float, cues
         candidates.append(pick)
 
     preliminary = dedupe_keyframe_candidates(candidates, max_count, options, samples)
+    boundary = pick_boundary_coverage_keyframes(preliminary, samples, cues, start, end, options)
+    coverage_seed = [*preliminary, *boundary]
     coverage = [
-        *pick_gap_coverage_keyframes(preliminary, samples, cues, start, end, options),
-        *pick_visual_coverage_keyframes(preliminary, samples, cues, start, end, options),
+        *boundary,
+        *pick_gap_coverage_keyframes(coverage_seed, samples, cues, start, end, options),
+        *pick_visual_coverage_keyframes(coverage_seed, samples, cues, start, end, options),
     ]
     candidates.extend(coverage)
 
@@ -1630,6 +1693,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--color-island-window", type=int, default=2, help="Neighbor samples used to detect short color islands.")
     parser.add_argument("--max-keyframe-gap-sec", type=float, default=45.0, help="Add coverage frames when selected keyframes leave longer gaps.")
     parser.add_argument("--max-gap-keyframes-per-sheet", type=int, default=4)
+    parser.add_argument("--boundary-keyframe-gap-sec", type=float, default=24.0, help="Add a boundary coverage frame when a sheet starts or ends with a long keyframe gap.")
+    parser.add_argument("--max-boundary-coverage-keyframes-per-sheet", type=int, default=2)
     parser.add_argument("--action-gap-sec", type=float, default=20.0, help="Add motion-aware candidates when final keyframes leave active gaps longer than this.")
     parser.add_argument("--action-gap-min-activity", type=float, default=0.45, help="Minimum normalized activity score for motion-aware gap candidates.")
     parser.add_argument("--max-action-coverage-keyframes-per-sheet", type=int, default=4)

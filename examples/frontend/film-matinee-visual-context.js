@@ -36,6 +36,8 @@ const DEFAULTS = {
   colorIslandWindow: 2,
   maxKeyframeGapSec: 45,
   maxGapKeyframesPerSheet: 4,
+  boundaryKeyframeGapSec: 24,
+  maxBoundaryCoverageKeyframesPerSheet: 2,
   actionGapSec: 20,
   actionGapMinActivity: 0.45,
   maxActionCoverageKeyframesPerSheet: 4,
@@ -716,6 +718,56 @@ function pickGapCoverageKeyframes(selected, samples, cues, from, to, options) {
   return additions;
 }
 
+function pickBoundaryCoverageKeyframes(selected, samples, cues, from, to, options) {
+  const boundaryGap = Number(options.boundaryKeyframeGapSec) || 0;
+  const maxAdditions = Math.max(0, Math.floor(Number(options.maxBoundaryCoverageKeyframesPerSheet) || 0));
+  if (boundaryGap <= 0 || maxAdditions <= 0 || !samples.length || !selected.length) return [];
+
+  const ordered = selected.slice().sort((a, b) => a.time - b.time);
+  const gaps = [
+    [from, ordered[0].time, "boundary-start"],
+    [ordered[ordered.length - 1].time, to, "boundary-end"],
+  ];
+  const additions = [];
+
+  for (const [left, right, reason] of gaps) {
+    const gap = right - left;
+    if (gap <= boundaryGap) continue;
+    const target = left + gap * 0.5;
+    const radius = Math.min(Math.max(4, boundaryGap * 0.6), Math.max(4, gap * 0.45));
+    let candidates = samplesInRange(samples, target - radius, target + radius);
+    const useful = candidates.filter((sample) => !sample.lowInformation);
+    candidates = useful.length ? useful : candidates;
+    if (!candidates.length) continue;
+    const segment = { start: left, end: right };
+    const segmentSamples = samplesInRange(samples, left, right);
+    const selectedTimes = [...selected, ...additions].map((item) => item.time);
+    const scored = candidates
+      .map((sample) => {
+        const targetScore = 1 - clamp(Math.abs(sample.t - target) / Math.max(0.001, radius), 0, 1);
+        const diversity = selectedTimes.length
+          ? clamp(Math.min(...selectedTimes.map((time) => Math.abs(time - sample.t))) / boundaryGap, 0, 1)
+          : 1;
+        return {
+          time: sample.t,
+          score: 1.16
+            + 0.16 * targetScore
+            + 0.14 * representativeScore(sample, segmentSamples.length ? segmentSamples : candidates, cues, selectedTimes, options)
+            + 0.08 * sample.quality
+            + 0.06 * diversity
+            + 0.04 * subtitleProximityScore(sample.t, cues, options)
+            - (sample.lowInformation ? 0.18 : 0),
+          reason,
+          segment,
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+    if (scored.length) additions.push(scored[0]);
+    if (additions.length >= maxAdditions) return additions;
+  }
+  return additions;
+}
+
 function gapActivityComponents(sample, gapSamples, leftSample, rightSample, options) {
   const changeRef = Math.max(45, quantile(gapSamples.map((item) => item.change), 0.9));
   const regionalRef = Math.max(35, quantile(gapSamples.map((item) => item.regionalChange || 0), 0.9));
@@ -877,9 +929,12 @@ function pickKeyframeSelections(samples, from, to, cues, rows, options) {
   }
 
   const preliminary = dedupeKeyframeCandidates(candidates, maxCount, options, samples);
+  const boundary = pickBoundaryCoverageKeyframes(preliminary, samples, cues, from, to, options);
+  const coverageSeed = [...preliminary, ...boundary];
   candidates.push(
-    ...pickGapCoverageKeyframes(preliminary, samples, cues, from, to, options),
-    ...pickVisualCoverageKeyframes(preliminary, samples, cues, from, to, options),
+    ...boundary,
+    ...pickGapCoverageKeyframes(coverageSeed, samples, cues, from, to, options),
+    ...pickVisualCoverageKeyframes(coverageSeed, samples, cues, from, to, options),
   );
 
   if (!candidates.length && samples.length) {
