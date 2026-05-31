@@ -1593,7 +1593,7 @@ export function createFilmMatineeVisualContext(filmMatineePlayer, initOptions = 
     const unitLabel = visual.mode === "adaptive" ? "视觉单元" : "视觉窗口";
     const lines = [
       `[正在和你看 ${visual.title}，${unitLabel} ${fmtTime(visual.timeRange[0])}-${fmtTime(visual.timeRange[1])}]`,
-      "附图是 film-matinee sheet：按从左到右、从上到下阅读；关键帧之间的色带压缩经过的时间，越长只代表时间越久；关键帧下方短句只是字幕锚点，完整字幕见 sidecar。",
+      "你正在观看一段被压缩成 film-matinee sheet 的电影时间。请按从左到右、从上到下的顺序线性观看；每张关键帧是画面锚点，关键帧之间的色带表示持续经过的画面时间、色彩和节奏变化，下方音频 rail 表示声音能量和突变。请结合 sidecar 字幕文本理解语义，但以画面内容为主；如果有值得保留的想法，可以碎碎念或留下短批注，也可以安静看完继续下一段。",
       visual.sidecar,
       "",
     ];

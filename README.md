@@ -12,6 +12,7 @@
 - 关键帧抽取会综合镜头切换、局部色彩变化、短促 micro event、音频瞬态和长动作段覆盖；暗场有纹理/轮廓时不会被简单当作低信息。
 - 把完整字幕作为 sidecar 文本交给 AI，避免把文字全塞进图片。
 - 用 MCP 工具 `film_start` / `film_next` 让 AI 按顺序读 chunk。
+- 每个 chunk 自带观影前小 tips，引导 AI 按电影时间线性观看 sheet，而不是只扫一眼结构信息。
 - 用 `film_note` / `film_reply` 写入共享 `annotations.json`，前端 viewer 可实时显示。
 - 保留原本轻量本地播放服务：扫文件夹、HTTP Range 视频流、SRT 字幕按区间返回。
 

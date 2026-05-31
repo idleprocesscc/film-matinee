@@ -303,14 +303,14 @@ def _viewing_guide(manifest: dict[str, Any], sheet: dict[str, Any]) -> str:
         layout = f"{columns} columns / up to {max_frames} keyframes"
     return "\n".join([
         "[viewing-guide]",
-        "Use the attached sheet as the primary visual source; do not replace it with a prose-only summary.",
-        f"layout: {layout}. Empty visual capacity is meaningful: this chunk did not need every slot.",
-        "read order: left to right, top to bottom. K labels are keyframes; short text under a frame is only a subtitle anchor.",
-        "color bands: each band compresses the elapsed time between adjacent keyframes; longer bands mean more time passed, not bigger importance.",
-        "subtitle markers: small pale bars below rows show where sidecar subtitles occur in that row's time span.",
-        "audio rail: thin blue waveform below rows is normalized within the chunk; compare loud/quiet moments inside this chunk, not across the whole film.",
-        "sidecar: full dialogue/subtitle text for this chunk follows below; trust sidecar text over tiny rendered anchors.",
-        "notes: if you notice a durable interpretation, question, motif, or user-facing comment, call film_note for this chunk/time.",
+        "You are watching a span of film time compressed into a film-matinee sheet, not merely scanning an infographic.",
+        "Watch linearly from left to right, top to bottom. Treat each keyframe as a visual anchor in the film's time flow.",
+        "Use image content as the primary source: notice character placement, composition, shot scale, movement, light, color, editing rhythm, and sound changes.",
+        "Color bands between keyframes represent elapsed visual time, color, and rhythm; longer bands mean more time passed, not necessarily greater importance.",
+        "The thin blue audio rail is normalized within this chunk; compare loud/quiet moments inside this chunk, not across the whole film.",
+        "Short subtitles under keyframes are only semantic anchors. Read the sidecar subtitles below for dialogue and precise text.",
+        f"Layout: {layout}. Empty visual capacity is meaningful: this chunk did not need every slot.",
+        "If you have a worthwhile thought, uncertainty, motif, or user-facing observation, you may think aloud or call film_note; otherwise keep watching without forcing notes.",
         "[/viewing-guide]",
     ])
 
