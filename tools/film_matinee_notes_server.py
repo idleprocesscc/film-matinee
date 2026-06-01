@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import re
 import uuid
@@ -88,7 +87,16 @@ def _write_annotations(manifest_path: Path, data: dict[str, Any]) -> None:
 
 @contextmanager
 def _annotations_lock(manifest_path: Path):
-    """Acquire an exclusive lock around annotation read-modify-write cycles."""
+    """Acquire an exclusive lock around annotation read-modify-write cycles.
+
+    Uses fcntl on Unix; falls back to no cross-process locking on Windows
+    (atomic write via tmp+rename is still the baseline safety net).
+    """
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
     lock_path = _annotations_path(manifest_path).with_suffix(".lock")
     lock_path.touch(exist_ok=True)
     fd = lock_path.open("w")

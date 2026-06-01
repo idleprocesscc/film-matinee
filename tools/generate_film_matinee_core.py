@@ -1755,12 +1755,18 @@ def build_manifest(video: Path, subtitle: Path | None, probe: dict, title: str, 
     }
 
 
-def ensure_valid_video(path: Path, probe: dict) -> float:
+def ensure_valid_video(path: Path, probe: dict, *, allow_small_video: bool = False) -> float:
     if not path.exists():
         raise RuntimeError(f"video does not exist: {path}")
     size = path.stat().st_size
     if size < 1024 * 1024:
-        print(f"[film-matinee] warning: video file looks small ({size} bytes): {path}", file=sys.stderr)
+        if allow_small_video:
+            print(f"[film-matinee] warning: video file looks small ({size} bytes): {path}", file=sys.stderr)
+        else:
+            raise RuntimeError(
+                f"video file looks small ({size} bytes, <1 MB) — possibly an incomplete download: {path}\n"
+                "Pass --allow-small-video to override this check."
+            )
     duration_text = probe.get("format", {}).get("duration")
     try:
         duration = float(duration_text)
@@ -1856,6 +1862,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-event-window-sec", type=float, default=0.5, help="Audio window around each visual sample.")
     parser.add_argument("--audio-event-context-sec", type=float, default=2.0, help="Local context used to score audio transients.")
     parser.add_argument("--audio-event-min-level", type=float, default=0.12, help="Ignore audio transient candidates below this rendered level.")
+    parser.add_argument("--allow-small-video", action="store_true", default=False, help="Downgrade the <1 MB video size check from error to warning.")
     return parser.parse_args()
 
 
@@ -1873,7 +1880,7 @@ def main() -> int:
     options.out_dir = out_dir
 
     probe = probe_video(video)
-    duration = ensure_valid_video(video, probe)
+    duration = ensure_valid_video(video, probe, allow_small_video=getattr(options, "allow_small_video", False))
     title = options.title or video.stem
     start = max(0.0, options.start)
     end = min(duration, options.end if options.end is not None else duration)

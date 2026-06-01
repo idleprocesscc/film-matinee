@@ -12,7 +12,6 @@ Each chunk returns a compact text packet plus the corresponding sheet image.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -114,6 +113,7 @@ def _build_generate_command(
     subtitle_style_exclude: str = "JP|Ruby",
     max_sheet_sec: float = 420.0,
     sample_step_sec: float = 1.0,
+    allow_small_video: bool = False,
 ) -> tuple[list[str], Path, Path, Path]:
     video = Path(video_path).expanduser().resolve()
     if not video.exists():
@@ -155,6 +155,8 @@ def _build_generate_command(
         cmd.extend(["--subtitle-offset-sec", str(float(subtitle_offset_sec))])
     if subtitle_style_include:
         cmd.extend(["--subtitle-style-include", subtitle_style_include])
+    if allow_small_video:
+        cmd.append("--allow-small-video")
 
     return cmd, out, out / "manifest.json", _log_path(out)
 
@@ -200,18 +202,19 @@ def _write_saved_cursor(manifest: Path, cursor: int, generation_id: str = "", la
 
 
 def _find_chunk_for_timecode(sheets: list[dict], timecode: float) -> int:
-    """Find the chunk index whose time range is nearest to the given timecode."""
-    best_idx = 0
-    best_dist = float("inf")
+    """Find the first chunk whose end is strictly after the given timecode.
+
+    This avoids replaying the chunk that just ended when the saved timecode
+    equals the previous chunk's end time (e.g. 60s should map to the
+    60-120 chunk, not the 0-60 chunk).  Falls back to nearest-distance if
+    no chunk's end exceeds the timecode (i.e. past the last chunk).
+    """
     for i, sheet in enumerate(sheets):
         start, end = sheet.get("time_range", [0, 0])
-        if float(start) <= timecode <= float(end):
+        if float(end) > timecode:
             return i
-        dist = min(abs(float(start) - timecode), abs(float(end) - timecode))
-        if dist < best_dist:
-            best_dist = dist
-            best_idx = i
-    return best_idx
+    # Past the end -- return the last chunk
+    return max(0, len(sheets) - 1)
 
 
 def _now() -> str:
@@ -220,7 +223,17 @@ def _now() -> str:
 
 @contextmanager
 def _annotations_lock(manifest: Path):
-    """Acquire an exclusive lock around annotation read-modify-write cycles."""
+    """Acquire an exclusive lock around annotation read-modify-write cycles.
+
+    Uses fcntl on Unix; falls back to no cross-process locking on Windows
+    (atomic write via tmp+rename is still the baseline safety net).
+    """
+    try:
+        import fcntl
+    except ImportError:
+        # Windows: no fcntl, rely on atomic tmp+rename in _write_annotations
+        yield
+        return
     lock_path = _annotations_path(manifest).with_suffix(".lock")
     lock_path.touch(exist_ok=True)
     fd = lock_path.open("w")
@@ -483,6 +496,7 @@ def film_generate_command(
     subtitle_style_exclude: str = "JP|Ruby",
     max_sheet_sec: float = 420.0,
     sample_step_sec: float = 1.0,
+    allow_small_video: bool = False,
 ) -> str:
     """Return the generator command for a local film without running it."""
     cmd, out, manifest, log = _build_generate_command(
@@ -500,6 +514,7 @@ def film_generate_command(
         subtitle_style_exclude,
         max_sheet_sec,
         sample_step_sec,
+        allow_small_video,
     )
     return "\n".join([
         f"out_dir: {out}",
@@ -526,6 +541,7 @@ def film_generate(
     subtitle_style_exclude: str = "JP|Ruby",
     max_sheet_sec: float = 420.0,
     sample_step_sec: float = 1.0,
+    allow_small_video: bool = False,
     background: bool = True,
 ) -> str:
     """Generate film-matinee sheets from local video/subtitles.
@@ -549,6 +565,7 @@ def film_generate(
         subtitle_style_exclude,
         max_sheet_sec,
         sample_step_sec,
+        allow_small_video,
     )
     job_key = str(out)
     existing = _jobs.get(job_key)
