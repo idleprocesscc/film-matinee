@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import uuid
 from contextlib import contextmanager
@@ -80,7 +81,7 @@ def _read_annotations(manifest_path: Path) -> dict[str, Any]:
 
 def _write_annotations(manifest_path: Path, data: dict[str, Any]) -> None:
     path = _annotations_path(manifest_path)
-    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
     tmp.replace(path)
 
@@ -89,23 +90,39 @@ def _write_annotations(manifest_path: Path, data: dict[str, Any]) -> None:
 def _annotations_lock(manifest_path: Path):
     """Acquire an exclusive lock around annotation read-modify-write cycles.
 
-    Uses fcntl on Unix; falls back to no cross-process locking on Windows
-    (atomic write via tmp+rename is still the baseline safety net).
+    Uses fcntl on Unix and msvcrt byte-range locks on Windows so the MCP
+    server and notes bridge queue writes to the same annotations file.
     """
+    lock_path = _annotations_path(manifest_path).with_suffix(".lock")
+    lock_path.touch(exist_ok=True)
     try:
         import fcntl
     except ImportError:
-        yield
-        return
-    lock_path = _annotations_path(manifest_path).with_suffix(".lock")
-    lock_path.touch(exist_ok=True)
-    fd = lock_path.open("w")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+        import msvcrt
+
+        fd = lock_path.open("a+b")
+        try:
+            fd.seek(0)
+            if not fd.read(1):
+                fd.write(b"\0")
+                fd.flush()
+            fd.seek(0)
+            msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            fd.close()
+    else:
+        fd = lock_path.open("w")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
 
 
 def _sheet_by_index(manifest: dict[str, Any], chunk_index: int) -> dict[str, Any]:
