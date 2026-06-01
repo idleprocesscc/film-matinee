@@ -772,8 +772,8 @@ function gapActivityComponents(sample, gapSamples, leftSample, rightSample, opti
   const changeRef = Math.max(45, quantile(gapSamples.map((item) => item.change), 0.9));
   const regionalRef = Math.max(35, quantile(gapSamples.map((item) => item.regionalChange || 0), 0.9));
   const action = clamp(
-    0.55 * clamp(sample.change / changeRef, 0, 1)
-    + 0.45 * clamp((sample.regionalChange || 0) / regionalRef, 0, 1),
+    0.5 * clamp(sample.change / changeRef, 0, 1)
+    + 0.5 * clamp((sample.regionalChange || 0) / regionalRef, 0, 1),
     0,
     1,
   );
@@ -1401,6 +1401,17 @@ export function createFilmMatineeVisualContext(filmMatineePlayer, initOptions = 
   const options = { ...DEFAULTS, ...initOptions };
   options.baseUrl = stripBaseUrl(options.baseUrl);
   const cache = new Map();
+  const CACHE_MAX = 20;
+
+  function cacheSet(key, value) {
+    if (cache.has(key)) {
+      cache.delete(key);
+    } else if (cache.size >= CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      cache.delete(oldest);
+    }
+    cache.set(key, value);
+  }
 
   async function buildWindowSheet(buildOptions = {}) {
     const opts = { ...options, ...buildOptions };
@@ -1458,7 +1469,7 @@ export function createFilmMatineeVisualContext(filmMatineePlayer, initOptions = 
         keyframes,
         samples: compactSamples(samples),
       };
-      cache.set(cacheKey, result);
+      cacheSet(cacheKey, result);
       return result;
     } finally {
       sampler.removeAttribute("src");
@@ -1571,7 +1582,7 @@ export function createFilmMatineeVisualContext(filmMatineePlayer, initOptions = 
           candidateDuration: Number((candidateTo - from).toFixed(3)),
         },
       };
-      cache.set(cacheKey, result);
+      cacheSet(cacheKey, result);
       return result;
     } finally {
       sampler.removeAttribute("src");

@@ -23,6 +23,7 @@ import struct
 import statistics
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -30,6 +31,11 @@ from pathlib import Path
 from typing import Iterable
 
 from PIL import Image, ImageDraw, ImageFont
+
+try:
+    import numpy as _np
+except ImportError:
+    _np = None
 
 
 FFMPEG = "ffmpeg"
@@ -268,17 +274,70 @@ def rgb_saturation(r: int, g: int, b: int) -> float:
     return 0.0 if high <= 0 else (high - low) / high
 
 
-def frame_stats(buffer: bytes, width: int, height: int, regional_grid: int = 4) -> dict:
+def _frame_stats_numpy(buffer: bytes, width: int, height: int, regional_grid: int = 4) -> dict:
+    """Vectorized frame_stats using numpy."""
+    np = _np
     count = width * height
-    if count == 0:
-        return {
-            "rgb": [0, 0, 0],
-            "luma": 0.0,
-            "contrast": 0.0,
-            "edge": 0.0,
-            "saturation": 0.0,
-            "tiles": [],
-        }
+    arr = np.frombuffer(buffer, dtype=np.uint8).reshape(height, width, 3).astype(np.float64)
+    r_ch, g_ch, b_ch = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+
+    luma_arr = (0.2126 * r_ch + 0.7152 * g_ch + 0.0722 * b_ch) / 255.0
+    r_sum = float(r_ch.sum())
+    g_sum = float(g_ch.sum())
+    b_sum = float(b_ch.sum())
+    luma_sum = float(luma_arr.sum())
+    luma_sq = float((luma_arr * luma_arr).sum())
+
+    # saturation: (max - min) / max per pixel, 0 if max==0
+    max_ch = np.maximum(np.maximum(r_ch, g_ch), b_ch)
+    min_ch = np.minimum(np.minimum(r_ch, g_ch), b_ch)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sat_arr = np.where(max_ch > 0, (max_ch - min_ch) / max_ch, 0.0)
+    sat_sum = float(sat_arr.sum())
+
+    # edge: horizontal and vertical luma differences
+    edge_h = np.abs(luma_arr[:, :-1] - luma_arr[:, 1:])
+    edge_v = np.abs(luma_arr[:-1, :] - luma_arr[1:, :])
+    edge_total = float(edge_h.sum()) + float(edge_v.sum())
+    edge_count = edge_h.size + edge_v.size
+
+    # regional tiles
+    grid = max(1, int(regional_grid or 1))
+    tile_x_idx = np.clip((np.arange(width) * grid) // width, 0, grid - 1)
+    tile_y_idx = np.clip((np.arange(height) * grid) // height, 0, grid - 1)
+    tile_map = tile_y_idx[:, None] * grid + tile_x_idx[None, :]
+
+    tiles = []
+    for ti in range(grid * grid):
+        mask = tile_map == ti
+        tile_count = int(mask.sum())
+        if tile_count == 0:
+            tiles.append({"rgb": [0, 0, 0], "luma": 0.0})
+            continue
+        tiles.append({
+            "rgb": [
+                round(float(r_ch[mask].sum()) / tile_count),
+                round(float(g_ch[mask].sum()) / tile_count),
+                round(float(b_ch[mask].sum()) / tile_count),
+            ],
+            "luma": float(luma_arr[mask].sum()) / tile_count,
+        })
+
+    luma_avg = luma_sum / count
+    variance = max(0.0, luma_sq / count - luma_avg * luma_avg)
+    return {
+        "rgb": [round(r_sum / count), round(g_sum / count), round(b_sum / count)],
+        "luma": luma_avg,
+        "contrast": math.sqrt(variance),
+        "edge": edge_total / edge_count if edge_count else 0.0,
+        "saturation": sat_sum / count,
+        "tiles": tiles,
+    }
+
+
+def _frame_stats_pure(buffer: bytes, width: int, height: int, regional_grid: int = 4) -> dict:
+    """Pure-Python fallback for frame_stats."""
+    count = width * height
     r_sum = g_sum = b_sum = 0
     luma_sum = 0.0
     luma_sq = 0.0
@@ -343,13 +402,33 @@ def frame_stats(buffer: bytes, width: int, height: int, regional_grid: int = 4) 
     }
 
 
+def frame_stats(buffer: bytes, width: int, height: int, regional_grid: int = 4) -> dict:
+    count = width * height
+    if count == 0:
+        return {
+            "rgb": [0, 0, 0],
+            "luma": 0.0,
+            "contrast": 0.0,
+            "edge": 0.0,
+            "saturation": 0.0,
+            "tiles": [],
+        }
+    if _np is not None:
+        return _frame_stats_numpy(buffer, width, height, regional_grid)
+    return _frame_stats_pure(buffer, width, height, regional_grid)
+
+
 def pixel_motion(current: bytes, previous: bytes | None) -> float:
     if not previous:
         return 0.0
-    total = 0
     length = min(len(current), len(previous))
     if not length:
         return 0.0
+    if _np is not None:
+        cur = _np.frombuffer(current[:length], dtype=_np.uint8).astype(_np.int16)
+        prev = _np.frombuffer(previous[:length], dtype=_np.uint8).astype(_np.int16)
+        return float(_np.abs(cur - prev).sum()) / (length * 255)
+    total = 0
     for index in range(length):
         total += abs(current[index] - previous[index])
     return total / (length * 255)
@@ -1662,6 +1741,7 @@ def process_sheet(
 def build_manifest(video: Path, subtitle: Path | None, probe: dict, title: str, options: argparse.Namespace) -> dict:
     return {
         "title": title,
+        "generation_id": uuid.uuid4().hex,
         "video": str(video),
         "subtitle": str(subtitle) if subtitle else None,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1680,7 +1760,7 @@ def ensure_valid_video(path: Path, probe: dict) -> float:
         raise RuntimeError(f"video does not exist: {path}")
     size = path.stat().st_size
     if size < 1024 * 1024:
-        raise RuntimeError(f"video file looks incomplete ({size} bytes): {path}")
+        print(f"[film-matinee] warning: video file looks small ({size} bytes): {path}", file=sys.stderr)
     duration_text = probe.get("format", {}).get("duration")
     try:
         duration = float(duration_text)

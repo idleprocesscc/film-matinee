@@ -42,6 +42,7 @@ mcp = FastMCP(
 
 _cursors: dict[str, int] = {}
 _jobs: dict[str, subprocess.Popen[str]] = {}
+_guide_shown: set[str] = set()  # manifest paths that already showed viewing guide this session
 
 
 def _manifest_path(manifest_path: str) -> Path:
@@ -172,19 +173,45 @@ def _write_job(out_dir: Path, data: dict[str, Any]) -> None:
     _job_path(out_dir).write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
 
 
-def _read_saved_cursor(manifest: Path) -> int:
+def _read_saved_state(manifest: Path) -> dict:
     path = _state_path(manifest)
     if not path.exists():
-        return 0
+        return {"cursor": 0}
     try:
         data = json.loads(path.read_text("utf-8"))
-        return max(0, int(data.get("cursor", 0)))
+        data.setdefault("cursor", 0)
+        return data
     except (OSError, ValueError, json.JSONDecodeError):
-        return 0
+        return {"cursor": 0}
 
 
-def _write_saved_cursor(manifest: Path, cursor: int) -> None:
-    _state_path(manifest).write_text(json.dumps({"cursor": cursor}, ensure_ascii=False, indent=2), "utf-8")
+def _read_saved_cursor(manifest: Path) -> int:
+    return max(0, int(_read_saved_state(manifest).get("cursor", 0)))
+
+
+def _write_saved_cursor(manifest: Path, cursor: int, generation_id: str = "", last_timecode: float | None = None) -> None:
+    state = _read_saved_state(manifest)
+    state["cursor"] = cursor
+    if generation_id:
+        state["generation_id"] = generation_id
+    if last_timecode is not None:
+        state["last_timecode"] = last_timecode
+    _state_path(manifest).write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
+
+
+def _find_chunk_for_timecode(sheets: list[dict], timecode: float) -> int:
+    """Find the chunk index whose time range is nearest to the given timecode."""
+    best_idx = 0
+    best_dist = float("inf")
+    for i, sheet in enumerate(sheets):
+        start, end = sheet.get("time_range", [0, 0])
+        if float(start) <= timecode <= float(end):
+            return i
+        dist = min(abs(float(start) - timecode), abs(float(end) - timecode))
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
+    return best_idx
 
 
 def _now() -> str:
@@ -231,18 +258,39 @@ def _write_annotations(manifest: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _cursor(manifest: Path) -> int:
+def _cursor(manifest: Path, manifest_data: dict | None = None) -> int:
     key = str(manifest)
     if key not in _cursors:
-        _cursors[key] = _read_saved_cursor(manifest)
+        state = _read_saved_state(manifest)
+        saved_cursor = max(0, int(state.get("cursor", 0)))
+        # Check generation_id: if manifest was regenerated, recover cursor from timecode
+        if manifest_data is not None:
+            manifest_gen_id = manifest_data.get("generation_id", "")
+            saved_gen_id = state.get("generation_id", "")
+            if manifest_gen_id and saved_gen_id and manifest_gen_id != saved_gen_id:
+                last_tc = state.get("last_timecode")
+                sheets = manifest_data.get("sheets", [])
+                if last_tc is not None and sheets:
+                    saved_cursor = _find_chunk_for_timecode(sheets, float(last_tc))
+        _cursors[key] = saved_cursor
     return _cursors[key]
 
 
-def _set_cursor(manifest: Path, cursor: int) -> int:
+def _set_cursor(manifest: Path, cursor: int, manifest_data: dict | None = None) -> int:
     key = str(manifest)
     cursor = max(0, cursor)
     _cursors[key] = cursor
-    _write_saved_cursor(manifest, cursor)
+    gen_id = ""
+    last_tc = None
+    if manifest_data is not None:
+        gen_id = manifest_data.get("generation_id", "")
+        sheets = manifest_data.get("sheets", [])
+        # Store the timecode of the chunk we just viewed (cursor-1)
+        viewed = cursor - 1
+        if 0 <= viewed < len(sheets):
+            time_range = sheets[viewed].get("time_range", [0, 0])
+            last_tc = float(time_range[1])  # end of viewed chunk
+    _write_saved_cursor(manifest, cursor, gen_id, last_tc)
     return cursor
 
 
@@ -618,7 +666,7 @@ def film_overview(manifest_path: str) -> str:
         f"title: {manifest.get('title', 'Film')}",
         f"manifest: {path}",
         f"chunks: {len(manifest.get('sheets', []))}",
-        f"cursor: {_cursor(path)}",
+        f"cursor: {_cursor(path, manifest)}",
     ]
     for sheet in manifest.get("sheets", []):
         start, end = sheet.get("time_range", [0, 0])
@@ -639,8 +687,11 @@ def film_start(manifest_path: str, start_index: int = 0) -> list[Any]:
     if not sheets:
         raise ValueError("manifest has no sheets")
     start_index = max(0, min(int(start_index), len(sheets) - 1))
-    _set_cursor(path, start_index + 1)
-    return _chunk_response(path, manifest, sheets[start_index], cursor_after=start_index + 1)
+    _set_cursor(path, start_index + 1, manifest)
+    key = str(path)
+    include_guide = key not in _guide_shown
+    _guide_shown.add(key)
+    return _chunk_response(path, manifest, sheets[start_index], cursor_after=start_index + 1, include_guide=include_guide)
 
 
 @mcp.tool(structured_output=False)
@@ -650,9 +701,12 @@ def film_next(manifest_path: str) -> list[Any]:
     sheets = manifest.get("sheets", [])
     if not sheets:
         raise ValueError("manifest has no sheets")
-    cursor = min(_cursor(path), len(sheets) - 1)
-    _set_cursor(path, cursor + 1)
-    return _chunk_response(path, manifest, sheets[cursor], cursor_after=cursor + 1, include_guide=cursor == 0)
+    cursor = min(_cursor(path, manifest), len(sheets) - 1)
+    _set_cursor(path, cursor + 1, manifest)
+    key = str(path)
+    include_guide = key not in _guide_shown
+    _guide_shown.add(key)
+    return _chunk_response(path, manifest, sheets[cursor], cursor_after=cursor + 1, include_guide=include_guide)
 
 
 @mcp.tool(structured_output=False)
@@ -663,7 +717,7 @@ def film_chunk(manifest_path: str, index: int, advance_cursor: bool = False) -> 
     if advance_cursor:
         sheets = manifest.get("sheets", [])
         position = sheets.index(sheet)
-        _set_cursor(path, position + 1)
+        _set_cursor(path, position + 1, manifest)
         return _chunk_response(path, manifest, sheet, cursor_after=position + 1)
     return _chunk_response(path, manifest, sheet)
 
@@ -693,7 +747,7 @@ def film_locate(manifest_path: str, timecode: str = "", text: str = "", set_curs
     if set_cursor:
         sheets = manifest.get("sheets", [])
         first = matches[0]
-        _set_cursor(path, sheets.index(first))
+        _set_cursor(path, sheets.index(first), manifest)
 
     lines = []
     for sheet in matches:
