@@ -12,6 +12,7 @@ Each chunk returns a compact text packet plus the corresponding sheet image.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -19,6 +20,7 @@ import shlex
 import subprocess
 import sys
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -187,6 +189,20 @@ def _write_saved_cursor(manifest: Path, cursor: int) -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def _annotations_lock(manifest: Path):
+    """Acquire an exclusive lock around annotation read-modify-write cycles."""
+    lock_path = _annotations_path(manifest).with_suffix(".lock")
+    lock_path.touch(exist_ok=True)
+    fd = lock_path.open("w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
 
 
 def _read_annotations(manifest: Path) -> dict[str, Any]:
@@ -492,16 +508,14 @@ def film_generate(
         return f"already running pid={existing.pid}\nout_dir: {out}\nmanifest: {manifest}\nlog: {log}"
 
     if background:
-        log_handle = log.open("a", encoding="utf-8")
+        log_handle = open(str(log), "ab")
         proc = subprocess.Popen(
             cmd,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
-            text=True,
             cwd=str(Path.cwd()),
             start_new_session=True,
         )
-        log_handle.close()
         _jobs[job_key] = proc
         _write_job(out, {
             "status": "running",
@@ -724,9 +738,10 @@ def film_note(
         "created_at": _now(),
         "replies": [],
     }
-    data = _read_annotations(path)
-    data.setdefault("annotations", []).append(note)
-    _write_annotations(path, data)
+    with _annotations_lock(path):
+        data = _read_annotations(path)
+        data.setdefault("annotations", []).append(note)
+        _write_annotations(path, data)
     return f"saved {note_id} to {_annotations_path(path)}"
 
 
@@ -737,18 +752,19 @@ def film_reply(manifest_path: str, note_id: str, text: str, author: str = "ai") 
     text = text.strip()
     if not text:
         raise ValueError("reply text is empty")
-    data = _read_annotations(path)
-    for note in data.get("annotations", []):
-        if note.get("id") == note_id:
-            reply_id = f"R{uuid.uuid4().hex[:8]}"
-            note.setdefault("replies", []).append({
-                "id": reply_id,
-                "author": author,
-                "text": text,
-                "created_at": _now(),
-            })
-            _write_annotations(path, data)
-            return f"saved {reply_id} under {note_id}"
+    with _annotations_lock(path):
+        data = _read_annotations(path)
+        for note in data.get("annotations", []):
+            if note.get("id") == note_id:
+                reply_id = f"R{uuid.uuid4().hex[:8]}"
+                note.setdefault("replies", []).append({
+                    "id": reply_id,
+                    "author": author,
+                    "text": text,
+                    "created_at": _now(),
+                })
+                _write_annotations(path, data)
+                return f"saved {reply_id} under {note_id}"
     raise ValueError(f"note not found: {note_id}")
 
 

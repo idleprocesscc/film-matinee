@@ -130,8 +130,15 @@ def parse_srt(path: Path) -> list[Cue]:
     return cues
 
 
+_MAX_STYLE_REGEX_LEN = 200
+
+
 def parse_ass(path: Path, include_style: str = "", exclude_style: str = "") -> list[Cue]:
     text = path.read_text("utf-8-sig", "ignore").replace("\r\n", "\n").replace("\r", "\n")
+    if include_style and len(include_style) > _MAX_STYLE_REGEX_LEN:
+        raise ValueError(f"include_style regex exceeds {_MAX_STYLE_REGEX_LEN} characters")
+    if exclude_style and len(exclude_style) > _MAX_STYLE_REGEX_LEN:
+        raise ValueError(f"exclude_style regex exceeds {_MAX_STYLE_REGEX_LEN} characters")
     include_re = re.compile(include_style) if include_style else None
     exclude_re = re.compile(exclude_style) if exclude_style else None
     cues: list[Cue] = []
@@ -263,6 +270,15 @@ def rgb_saturation(r: int, g: int, b: int) -> float:
 
 def frame_stats(buffer: bytes, width: int, height: int, regional_grid: int = 4) -> dict:
     count = width * height
+    if count == 0:
+        return {
+            "rgb": [0, 0, 0],
+            "luma": 0.0,
+            "contrast": 0.0,
+            "edge": 0.0,
+            "saturation": 0.0,
+            "tiles": [],
+        }
     r_sum = g_sum = b_sum = 0
     luma_sum = 0.0
     luma_sq = 0.0
@@ -437,6 +453,15 @@ def sample_visual_frames(video: Path, start: float, end: float, options: argpars
         "rawvideo",
         "pipe:1",
     ]
+    estimated_frames = int(math.ceil(duration / options.sample_step_sec)) + 1
+    estimated_bytes = estimated_frames * width * height * 3
+    max_buffer = 500 * 1024 * 1024  # 500 MB
+    if estimated_bytes > max_buffer:
+        raise RuntimeError(
+            f"Estimated ffmpeg output buffer is {estimated_bytes / (1024**2):.0f} MB "
+            f"({estimated_frames} frames at {width}x{height}), which exceeds the "
+            f"{max_buffer // (1024**2)} MB limit. Try a larger sample_step_sec to reduce frame count."
+        )
     result = subprocess.run(command, capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode("utf-8", "ignore").strip())
@@ -1166,14 +1191,25 @@ def annotate_audio_events(samples: list[dict], audio_levels: list[dict], options
 def font_candidates(bold: bool = False) -> list[str]:
     if bold:
         return [
+            # macOS
             "/System/Library/Fonts/STHeiti Medium.ttc",
             "/System/Library/Fonts/STHeiti Light.ttc",
             "/System/Library/Fonts/Hiragino Sans GB.ttc",
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
             "/Library/Fonts/Arial Bold.ttf",
             "/System/Library/Fonts/PingFang.ttc",
+            # Linux
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+            # Windows
+            "C:/Windows/Fonts/msyhbd.ttc",
+            "C:/Windows/Fonts/YuGothB.ttc",
+            "C:/Windows/Fonts/arialbd.ttf",
         ]
     return [
+        # macOS
         "/System/Library/Fonts/STHeiti Light.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -1181,6 +1217,16 @@ def font_candidates(bold: bool = False) -> list[str]:
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/Library/Fonts/Arial.ttf",
+        # Linux
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        # Windows
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
+        "C:/Windows/Fonts/arial.ttf",
     ]
 
 
@@ -1783,7 +1829,9 @@ def main() -> int:
         print(f"[film-matinee] sheet {index:03d} from {fmt_time(current)}", flush=True)
         item = process_sheet(video, cues, title, current, end, index, out_dir, options)
         manifest["sheets"].append(item)
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")
+        _tmp = manifest_path.with_suffix(".json.tmp")
+        _tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")
+        _tmp.replace(manifest_path)
         current = item["time_range"][1]
         print(
             f"[film-matinee] -> {fmt_time(item['time_range'][0])}-{fmt_time(item['time_range'][1])} "

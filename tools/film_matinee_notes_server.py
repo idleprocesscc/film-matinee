@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,6 +86,20 @@ def _write_annotations(manifest_path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+@contextmanager
+def _annotations_lock(manifest_path: Path):
+    """Acquire an exclusive lock around annotation read-modify-write cycles."""
+    lock_path = _annotations_path(manifest_path).with_suffix(".lock")
+    lock_path.touch(exist_ok=True)
+    fd = lock_path.open("w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
+
+
 def _sheet_by_index(manifest: dict[str, Any], chunk_index: int) -> dict[str, Any]:
     for sheet in manifest.get("sheets", []):
         if int(sheet.get("index", -1)) == chunk_index:
@@ -159,9 +175,10 @@ def make_app(manifest_path: Path, *, allow_origin: str = "*") -> web.Application
             "created_at": _now(),
             "replies": [],
         }
-        data = _read_annotations(manifest_path)
-        data.setdefault("annotations", []).append(note)
-        _write_annotations(manifest_path, data)
+        with _annotations_lock(manifest_path):
+            data = _read_annotations(manifest_path)
+            data.setdefault("annotations", []).append(note)
+            _write_annotations(manifest_path, data)
         return _json(note, status=201, allow_origin=allow_origin)
 
     async def http_post_reply(request: web.Request) -> web.Response:
@@ -170,18 +187,19 @@ def make_app(manifest_path: Path, *, allow_origin: str = "*") -> web.Application
         text = str(body.get("text", "")).strip()
         if not text:
             return _err("reply text is empty", allow_origin=allow_origin)
-        data = _read_annotations(manifest_path)
-        for note in data.get("annotations", []):
-            if note.get("id") == note_id:
-                reply = {
-                    "id": f"R{uuid.uuid4().hex[:8]}",
-                    "author": str(body.get("author", "user") or "user"),
-                    "text": text,
-                    "created_at": _now(),
-                }
-                note.setdefault("replies", []).append(reply)
-                _write_annotations(manifest_path, data)
-                return _json(reply, status=201, allow_origin=allow_origin)
+        with _annotations_lock(manifest_path):
+            data = _read_annotations(manifest_path)
+            for note in data.get("annotations", []):
+                if note.get("id") == note_id:
+                    reply = {
+                        "id": f"R{uuid.uuid4().hex[:8]}",
+                        "author": str(body.get("author", "user") or "user"),
+                        "text": text,
+                        "created_at": _now(),
+                    }
+                    note.setdefault("replies", []).append(reply)
+                    _write_annotations(manifest_path, data)
+                    return _json(reply, status=201, allow_origin=allow_origin)
         return _err("note not found", status=404, allow_origin=allow_origin)
 
     async def http_options(request: web.Request) -> web.Response:
