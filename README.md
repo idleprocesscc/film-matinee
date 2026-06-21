@@ -39,6 +39,21 @@ python3 tools/generate_film_matinee_sheets.py \
   --max-sheets 0
 ```
 
+可选硬件解码/GPU 路径：
+
+```bash
+# 在上面的生成命令末尾追加；macOS VideoToolbox
+--ffmpeg-hwaccel videotoolbox
+
+# Windows 常见硬解
+--ffmpeg-hwaccel d3d11va
+
+# NVIDIA
+--ffmpeg-hwaccel cuda --ffmpeg-hwaccel-device 0
+```
+
+`--ffmpeg-hwaccel` 只影响 ffmpeg 视频解码阶段；关键帧选择、色带和音频 rail 的算法不变。硬解是否更快取决于机器、编码格式和 ffmpeg 构建；如果某个片源报 ffmpeg 解码错误，去掉这个参数即可回到默认 CPU 路径。
+
 然后启动批注桥：
 
 ```bash
@@ -77,6 +92,7 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 常用工具：
 
 - `film_generate(video_path, subtitle_path="", out_dir="", ...)`：从本地视频/字幕生成 sheets。
+- `film_generate(..., ffmpeg_hwaccel="videotoolbox")`：可选硬件解码；也可用 `auto`、`cuda`、`d3d11va`、`qsv`、`vaapi` 等 ffmpeg 支持的值。
 - `film_generate_status(out_dir)`：查看后台生成进度。
 - `film_generate_command(video_path, ...)`：只生成命令，不执行。
 - `film_overview(manifest_path)`：查看 chunk 索引。

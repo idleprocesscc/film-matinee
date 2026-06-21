@@ -22,6 +22,8 @@ python3 tools/generate_film_matinee_sheets.py \
 
 `--layout 4x4` 表示一张图最多 16 张关键帧，是默认的观影密度。想更轻地边看边聊，可以换成 `4x3`；想精读蒙太奇、动作或强视觉段落时，可以换成 `5x4` 提高信息密度。空格不是浪费，而是说明这一节没必要填满。
 
+可选硬件解码：在命令末尾追加 `--ffmpeg-hwaccel videotoolbox`（macOS）、`--ffmpeg-hwaccel d3d11va`（Windows）、`--ffmpeg-hwaccel cuda --ffmpeg-hwaccel-device 0`（NVIDIA），或者用 `--ffmpeg-hwaccel auto` 让 ffmpeg 自选。它只加速/改变视频解码阶段，不改变关键帧算法；如果某个片源硬解失败，去掉参数即可回到默认 CPU 路径。
+
 关键帧不是按固定秒数硬抽。生成器会综合全局/局部色彩变化、motion、短促 micro event、音频瞬态，以及超过约 20 秒仍有动作变化的空档覆盖。暗场会看边缘、对比、纹理和饱和度；低调摄影、夜景和霓虹暗部不会因为“暗”本身被丢掉。
 
 ## Claude / MCP
@@ -76,6 +78,7 @@ subtitle_path=/path/to/subtitles.ass
 out_dir=.film-matinee-cache/movie-title
 layout=4x4
 subtitle_offset_sec=-29.5
+ffmpeg_hwaccel=videotoolbox
 ```
 
 然后让它调用：

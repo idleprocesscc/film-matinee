@@ -504,6 +504,17 @@ def fps_expression(sample_step: float) -> str:
     return f"{fraction.numerator}/{fraction.denominator}"
 
 
+def ffmpeg_hwaccel_args(options: argparse.Namespace) -> list[str]:
+    hwaccel = str(getattr(options, "ffmpeg_hwaccel", "") or "").strip()
+    if not hwaccel or hwaccel.lower() in {"none", "off", "false", "0"}:
+        return []
+    args = ["-hwaccel", hwaccel]
+    device = str(getattr(options, "ffmpeg_hwaccel_device", "") or "").strip()
+    if device:
+        args.extend(["-hwaccel_device", device])
+    return args
+
+
 def sample_visual_frames(video: Path, start: float, end: float, options: argparse.Namespace) -> list[dict]:
     width = options.sample_width
     height = options.sample_height
@@ -523,6 +534,7 @@ def sample_visual_frames(video: Path, start: float, end: float, options: argpars
         f"{start:.3f}",
         "-t",
         f"{duration + 0.001:.3f}",
+        *ffmpeg_hwaccel_args(options),
         "-i",
         str(video),
         "-vf",
@@ -1145,7 +1157,7 @@ def choose_adaptive_end(start: float, candidate_end: float, selections: list[Sel
     return clamp(round(aligned, 3), min_end, candidate_end)
 
 
-def capture_frame(video: Path, time: float, width: int, height: int) -> Image.Image:
+def capture_frame(video: Path, time: float, width: int, height: int, options: argparse.Namespace) -> Image.Image:
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
@@ -1157,6 +1169,7 @@ def capture_frame(video: Path, time: float, width: int, height: int) -> Image.Im
         "error",
         "-ss",
         f"{time:.3f}",
+        *ffmpeg_hwaccel_args(options),
         "-i",
         str(video),
         "-frames:v",
@@ -1653,7 +1666,7 @@ def build_keyframes(video: Path, selections: list[Selection], cues: list[Cue], o
     capture_height = options.keyframe_height * 2
     keyframes = []
     for index, selection in enumerate(selections):
-        image = capture_frame(video, selection.time, capture_width, capture_height)
+        image = capture_frame(video, selection.time, capture_width, capture_height, options)
         keyframes.append({
             "id": f"K{index + 1}",
             "time": selection.time,
@@ -1863,6 +1876,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-event-context-sec", type=float, default=2.0, help="Local context used to score audio transients.")
     parser.add_argument("--audio-event-min-level", type=float, default=0.12, help="Ignore audio transient candidates below this rendered level.")
     parser.add_argument("--allow-small-video", action="store_true", default=False, help="Downgrade the <1 MB video size check from error to warning.")
+    parser.add_argument("--ffmpeg-hwaccel", default="none", help="Optional ffmpeg hardware decoder, e.g. auto, videotoolbox, cuda, qsv, d3d11va, vaapi. Default: none.")
+    parser.add_argument("--ffmpeg-hwaccel-device", default="", help="Optional ffmpeg hardware device id/path, e.g. 0 for CUDA or /dev/dri/renderD128 for VAAPI.")
     return parser.parse_args()
 
 

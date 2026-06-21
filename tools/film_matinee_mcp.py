@@ -114,6 +114,8 @@ def _build_generate_command(
     max_sheet_sec: float = 420.0,
     sample_step_sec: float = 1.0,
     allow_small_video: bool = False,
+    ffmpeg_hwaccel: str = "none",
+    ffmpeg_hwaccel_device: str = "",
 ) -> tuple[list[str], Path, Path, Path]:
     video = Path(video_path).expanduser().resolve()
     if not video.exists():
@@ -157,6 +159,10 @@ def _build_generate_command(
         cmd.extend(["--subtitle-style-include", subtitle_style_include])
     if allow_small_video:
         cmd.append("--allow-small-video")
+    if ffmpeg_hwaccel and ffmpeg_hwaccel.lower() not in {"none", "off", "false", "0"}:
+        cmd.extend(["--ffmpeg-hwaccel", ffmpeg_hwaccel])
+    if ffmpeg_hwaccel_device:
+        cmd.extend(["--ffmpeg-hwaccel-device", ffmpeg_hwaccel_device])
 
     return cmd, out, out / "manifest.json", _log_path(out)
 
@@ -523,6 +529,8 @@ def film_generate_command(
     max_sheet_sec: float = 420.0,
     sample_step_sec: float = 1.0,
     allow_small_video: bool = False,
+    ffmpeg_hwaccel: str = "none",
+    ffmpeg_hwaccel_device: str = "",
 ) -> str:
     """Return the generator command for a local film without running it."""
     cmd, out, manifest, log = _build_generate_command(
@@ -541,6 +549,8 @@ def film_generate_command(
         max_sheet_sec,
         sample_step_sec,
         allow_small_video,
+        ffmpeg_hwaccel,
+        ffmpeg_hwaccel_device,
     )
     return "\n".join([
         f"out_dir: {out}",
@@ -568,6 +578,8 @@ def film_generate(
     max_sheet_sec: float = 420.0,
     sample_step_sec: float = 1.0,
     allow_small_video: bool = False,
+    ffmpeg_hwaccel: str = "none",
+    ffmpeg_hwaccel_device: str = "",
     background: bool = True,
 ) -> str:
     """Generate film-matinee sheets from local video/subtitles.
@@ -592,6 +604,8 @@ def film_generate(
         max_sheet_sec,
         sample_step_sec,
         allow_small_video,
+        ffmpeg_hwaccel,
+        ffmpeg_hwaccel_device,
     )
     job_key = str(out)
     existing = _jobs.get(job_key)
