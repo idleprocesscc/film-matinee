@@ -142,7 +142,7 @@ def _safe_manifest_path(value: str) -> Path:
 
 
 def _resolve_manifest_file(root: Path, rel: str) -> Path:
-    rel_path = Path(rel)
+    rel_path = Path(str(rel).replace("\\", "/"))
     if rel_path.is_absolute() or ".." in rel_path.parts:
         raise web.HTTPForbidden(text="path is outside manifest directory")
     path = (root / rel_path).resolve()

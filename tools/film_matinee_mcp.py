@@ -366,21 +366,32 @@ def _sheet_for_time(manifest: dict[str, Any], seconds: float) -> dict[str, Any] 
     return None
 
 
-def _sidecar_text(root: Path, sheet: dict[str, Any]) -> str:
-    rel = sheet.get("sidecar")
+def _manifest_file(root: Path, rel: str | None) -> Path | None:
     if not rel:
+        return None
+    rel_path = Path(str(rel).replace("\\", "/"))
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        return None
+    path = (root / rel_path).resolve()
+    root = root.resolve()
+    if root not in path.parents and path != root:
+        return None
+    return path
+
+
+def _sidecar_text(root: Path, sheet: dict[str, Any]) -> str:
+    path = _manifest_file(root, sheet.get("sidecar"))
+    if path is None:
         return ""
-    path = root / rel
     if not path.exists():
         return ""
     return path.read_text("utf-8", "ignore")
 
 
 def _sheet_image(root: Path, sheet: dict[str, Any]) -> Image | None:
-    rel = sheet.get("sheet")
-    if not rel:
+    path = _manifest_file(root, sheet.get("sheet"))
+    if path is None:
         return None
-    path = root / rel
     if not path.exists():
         return None
     return Image(path=path)
@@ -490,7 +501,7 @@ def _chunk_response(
 ) -> list[Any]:
     text = _chunk_text(manifest_path, manifest, sheet, cursor_after, include_guide)
     image = _sheet_image(manifest_path.parent, sheet)
-    if image:
+    if image is not None:
         return [text, image]
     return [text]
 

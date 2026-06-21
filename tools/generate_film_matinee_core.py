@@ -1733,8 +1733,8 @@ def process_sheet(
         "audio_sample_count": len(audio_levels),
         "subtitle_count": len(cues),
         "keyframes": keyframe_payload,
-        "sheet": str(sheet_path.relative_to(out_dir)) if not options.dry_run else None,
-        "sidecar": str(sidecar_path.relative_to(out_dir)) if not options.dry_run else None,
+        "sheet": sheet_path.relative_to(out_dir).as_posix() if not options.dry_run else None,
+        "sidecar": sidecar_path.relative_to(out_dir).as_posix() if not options.dry_run else None,
     }
 
 
