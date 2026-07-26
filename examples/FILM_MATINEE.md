@@ -19,7 +19,7 @@ film_open(
 
 `source` 也可以是本地 `.mkv` / `.mp4` 路径。没有显式传字幕时，本地视频会先寻找同名 sidecar，再尝试提取文本型内嵌字幕；URL 会优先人工字幕，再选择自动字幕。VTT 原本带有 `<v Speaker>` 时会保留为 `[Speaker]`，不会在清理标签时丢掉已有角色信息。默认不会读取浏览器 cookies，需要时再显式传 `cookies_from_browser="chrome"`。
 
-如果站点把字幕烧进画面而没有独立轨，`subtitle_path` 会是空的：sheet 中仍能看到字幕像素，但 sidecar 没有文字。当前不会自动 OCR 后把不确定结果当成精确字幕；需要完整 sidecar 时应传入同步的 ASS/SRT/VTT。
+如果站点把字幕烧进画面而没有独立轨，macOS 默认会跨全片抽样探测；确认存在后，再按 chunk 用 Apple Vision 识别。sidecar 会明确写 `source=burned-subtitle-ocr` 和每段置信度，不把 OCR 冒充原始字幕。可传 `burned_subtitles="off"` 关闭，或用 `ocr_fps=3` 提高短台词覆盖（也会近似线性增加耗时）。已有 ASS/SRT/VTT/内封文本轨时始终优先使用原字幕。
 
 拿返回的 `out_dir` 看进度：
 
@@ -73,6 +73,7 @@ python3 tools/generate_film_matinee_sheets.py \
 常用工具：
 
 - `film_open(source, ...)`：URL / 本地路径的一键入口，自动准备素材并生成。
+- `film_open(source, burned_subtitles="auto", ocr_fps=2, ...)`：没有字幕轨时在 macOS 自动探测并 OCR 烧录字幕。
 - `film_open_command(source, ...)`：只返回准备命令，不执行。
 - `film_generate(video_path, subtitle_path="", out_dir="", ...)`：从本地视频/字幕生成 sheets。默认后台运行，完成后读返回的 `manifest`。
 - `film_generate_status(out_dir)`：查看后台生成进度和最新 sheet。

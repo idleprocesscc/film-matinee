@@ -33,6 +33,23 @@ from typing import Iterable
 from PIL import Image, ImageDraw, ImageFont
 
 try:
+    from film_matinee_ocr import (
+        OCRCue,
+        OCRUnavailable,
+        detect_burned_subtitles,
+        ocr_video_range,
+        write_srt as write_ocr_srt,
+    )
+except ImportError:  # Imported as tools.generate_film_matinee_core in tests.
+    from .film_matinee_ocr import (
+        OCRCue,
+        OCRUnavailable,
+        detect_burned_subtitles,
+        ocr_video_range,
+        write_srt as write_ocr_srt,
+    )
+
+try:
     import numpy as _np
 except ImportError:
     _np = None
@@ -49,6 +66,8 @@ class Cue:
     end: float
     text: str
     style: str = ""
+    source: str = "source-subtitle"
+    confidence: float | None = None
 
 
 @dataclass
@@ -1747,8 +1766,55 @@ def render_sheet(
 
 
 def make_sidecar(cues: list[Cue], start: float, end: float) -> str:
-    lines = [f"{cue.id} {fmt_time(cue.start)}-{fmt_time(cue.end)}: {cue.text}" for cue in cues]
-    return "\n".join([f"[subtitles {fmt_time(start)}-{fmt_time(end)}]", *lines, "[/subtitles]"])
+    source = "burned-subtitle-ocr" if cues and all(cue.source == "burned-subtitle-ocr" for cue in cues) else "source-subtitle"
+    lines = []
+    for cue in cues:
+        confidence = f" [OCR {cue.confidence:.2f}]" if cue.confidence is not None else ""
+        lines.append(f"{cue.id} {fmt_time(cue.start)}-{fmt_time(cue.end)}{confidence}: {cue.text}")
+    return "\n".join([
+        f"[subtitles {fmt_time(start)}-{fmt_time(end)} source={source}]",
+        *lines,
+        "[/subtitles]",
+    ])
+
+
+def reindex_cues(cues: list[Cue]) -> None:
+    cues.sort(key=lambda cue: (cue.start, cue.end, cue.text))
+    for index, cue in enumerate(cues):
+        cue.id = cue_id(cue, index)
+
+
+def append_ocr_cues(
+    all_cues: list[Cue],
+    video: Path,
+    start: float,
+    end: float,
+    options: argparse.Namespace,
+) -> list[Cue]:
+    print(f"[film-matinee] OCR burned subtitles {fmt_time(start)}-{fmt_time(end)}", flush=True)
+    recognized = ocr_video_range(
+        video,
+        start,
+        end,
+        fps=options.ocr_fps,
+        crop_ratio=options.ocr_crop_ratio,
+        width=options.ocr_width,
+        hwaccel_args=ffmpeg_hwaccel_args(options),
+    )
+    appended = [
+        Cue(
+            "",
+            cue.start,
+            cue.end,
+            cue.text,
+            source="burned-subtitle-ocr",
+            confidence=cue.confidence,
+        )
+        for cue in recognized
+    ]
+    all_cues.extend(appended)
+    reindex_cues(all_cues)
+    return appended
 
 
 def selection_to_dict(selection: Selection) -> dict:
@@ -1810,7 +1876,9 @@ def process_sheet(
     analysis_options = argparse.Namespace(**{**vars(options), "max_keyframes": analysis_max})
     candidate_selections = pick_keyframe_selections(samples, start, candidate_end, candidate_cues, analysis_options)
     end = choose_adaptive_end(start, candidate_end, candidate_selections, options)
-    cues = cues_in_range(candidate_cues, start, end)
+    if getattr(options, "_ocr_active", False):
+        append_ocr_cues(all_cues, video, start, end, options)
+    cues = cues_in_range(all_cues, start, end)
     final_samples = samples_in_range(samples, start, end)
     audio_levels = [
         item for item in candidate_audio_levels
@@ -1866,7 +1934,7 @@ def build_manifest(video: Path, subtitle: Path | None, probe: dict, title: str, 
         "options": {
             key: value
             for key, value in vars(options).items()
-            if key not in {"video", "subtitle", "out_dir"}
+            if key not in {"video", "subtitle", "out_dir"} and not key.startswith("_")
         },
         "sheets": [],
     }
@@ -1931,6 +1999,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subtitle-style-include", default="", help="Regex for ASS styles to include.")
     parser.add_argument("--subtitle-style-exclude", default="JP|Ruby", help="Regex for ASS styles to exclude.")
     parser.add_argument("--subtitle-offset-sec", type=float, default=0.0, help="Shift subtitle cues by this many seconds.")
+    parser.add_argument(
+        "--burned-subtitles",
+        choices=("off", "auto", "ocr"),
+        default="auto",
+        help="OCR burned-in subtitles when no subtitle track exists. 'auto' detects first; 'ocr' forces it (macOS).",
+    )
+    parser.add_argument("--ocr-fps", type=float, default=2.0, help="Burned-subtitle OCR samples per second.")
+    parser.add_argument("--ocr-crop-ratio", type=float, default=0.34, help="Bottom fraction of the frame searched for subtitles.")
+    parser.add_argument("--ocr-width", type=int, default=960, help="Width of cropped OCR frames.")
 
     parser.add_argument("--sample-step-sec", type=float, default=1.0)
     parser.add_argument("--sample-width", type=int, default=64)
@@ -2018,9 +2095,59 @@ def main() -> int:
         raise RuntimeError(f"empty requested range: {start}..{end}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    if options.ocr_fps <= 0:
+        raise RuntimeError("--ocr-fps must be positive")
+    if not 0.15 <= options.ocr_crop_ratio <= 0.65:
+        raise RuntimeError("--ocr-crop-ratio must be between 0.15 and 0.65")
+    if options.ocr_width < 320:
+        raise RuntimeError("--ocr-width must be at least 320")
     cues = parse_subtitles(subtitle, options.subtitle_style_include, options.subtitle_style_exclude)
     cues = shift_cues(cues, options.subtitle_offset_sec)
-    manifest = build_manifest(video, subtitle, probe, title, options)
+    subtitle_is_ocr = bool(subtitle and subtitle.name.endswith(".ocr.srt"))
+    if subtitle_is_ocr:
+        for cue in cues:
+            cue.source = "burned-subtitle-ocr"
+    ocr_status: dict = {
+        "mode": options.burned_subtitles,
+        "active": False,
+        "fps": options.ocr_fps,
+        "crop_ratio": options.ocr_crop_ratio,
+        "width": options.ocr_width,
+    }
+    options._ocr_active = False
+    if subtitle:
+        if options.burned_subtitles == "ocr":
+            print("[film-matinee] burned-subtitle OCR ignored because a source subtitle was provided", file=sys.stderr)
+        ocr_status["reason"] = "ocr-sidecar-present" if subtitle_is_ocr else "source-subtitle-present"
+    elif options.burned_subtitles != "off":
+        try:
+            if options.burned_subtitles == "ocr":
+                options._ocr_active = True
+                ocr_status["forced"] = True
+            else:
+                detection = detect_burned_subtitles(
+                    video,
+                    duration,
+                    crop_ratio=options.ocr_crop_ratio,
+                    width=options.ocr_width,
+                )
+                ocr_status["detection"] = detection
+                options._ocr_active = bool(detection.get("detected"))
+            ocr_status["active"] = options._ocr_active
+        except (OCRUnavailable, RuntimeError) as exc:
+            ocr_status["error"] = str(exc)
+            if options.burned_subtitles == "ocr":
+                raise
+            print(f"[film-matinee] burned-subtitle OCR unavailable: {exc}", file=sys.stderr)
+
+    ocr_subtitle = out_dir / "source" / "burned-subtitles.ocr.srt" if options._ocr_active else None
+    manifest = build_manifest(video, ocr_subtitle or subtitle, probe, title, options)
+    manifest["subtitle_source"] = (
+        "burned-subtitle-ocr"
+        if options._ocr_active or subtitle_is_ocr
+        else ("source-subtitle" if subtitle else None)
+    )
+    manifest["burned_subtitle_ocr"] = ocr_status
     manifest_path = out_dir / "manifest.json"
     replacing = bool(options.replace_existing_sheet)
     if replacing and not manifest_path.exists():
@@ -2051,7 +2178,7 @@ def main() -> int:
 
     print(f"[film-matinee] video={video}")
     print(f"[film-matinee] duration={fmt_time(duration)} requested={fmt_time(start)}-{fmt_time(end)}")
-    print(f"[film-matinee] subtitles={len(cues)}")
+    print(f"[film-matinee] subtitles={len(cues)} source={manifest.get('subtitle_source') or 'none'}")
     print(f"[film-matinee] out={out_dir}")
 
     current = start
@@ -2070,6 +2197,19 @@ def main() -> int:
                 "max_sheet_sec": end - current,
             })
         item = process_sheet(video, cues, title, current, end, index, out_dir, sheet_options)
+        if options._ocr_active and ocr_subtitle is not None:
+            write_ocr_srt([
+                OCRCue(
+                    cue.start,
+                    cue.end,
+                    cue.text,
+                    cue.confidence or 0.0,
+                    0,
+                )
+                for cue in cues
+            ], ocr_subtitle)
+            manifest["subtitle"] = str(ocr_subtitle)
+            manifest["burned_subtitle_ocr"]["cue_count"] = len(cues)
         if replacing:
             item["refinement"] = {
                 "pin_times": options.pin_times,

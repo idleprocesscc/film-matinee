@@ -534,6 +534,10 @@ def build_generator_command(options: argparse.Namespace, prepared: PreparedSourc
         "--max-sheet-sec", str(options.max_sheet_sec),
         "--sample-step-sec", str(options.sample_step_sec),
         "--subtitle-style-exclude", options.subtitle_style_exclude,
+        "--burned-subtitles", options.burned_subtitles,
+        "--ocr-fps", str(options.ocr_fps),
+        "--ocr-crop-ratio", str(options.ocr_crop_ratio),
+        "--ocr-width", str(options.ocr_width),
     ]
     if prepared.subtitle_path:
         command.extend(["--subtitle", str(prepared.subtitle_path)])
@@ -591,6 +595,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subtitle-style-exclude", default="JP|Ruby")
     parser.add_argument("--max-sheet-sec", type=float, default=420.0)
     parser.add_argument("--sample-step-sec", type=float, default=1.0)
+    parser.add_argument("--burned-subtitles", choices=("off", "auto", "ocr"), default="auto")
+    parser.add_argument("--ocr-fps", type=float, default=2.0)
+    parser.add_argument("--ocr-crop-ratio", type=float, default=0.34)
+    parser.add_argument("--ocr-width", type=int, default=960)
     parser.add_argument("--allow-small-video", action="store_true")
     parser.add_argument("--ffmpeg-hwaccel", default="none")
     parser.add_argument("--ffmpeg-hwaccel-device", default="")

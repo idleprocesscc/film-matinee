@@ -153,6 +153,10 @@ def _build_generate_command(
     allow_small_video: bool = False,
     ffmpeg_hwaccel: str = "none",
     ffmpeg_hwaccel_device: str = "",
+    burned_subtitles: str = "auto",
+    ocr_fps: float = 2.0,
+    ocr_crop_ratio: float = 0.34,
+    ocr_width: int = 960,
 ) -> tuple[list[str], Path, Path, Path]:
     video = Path(video_path).expanduser().resolve()
     if not video.exists():
@@ -175,6 +179,10 @@ def _build_generate_command(
         "--subtitle-style-exclude", subtitle_style_exclude,
         "--max-sheet-sec", str(float(max_sheet_sec)),
         "--sample-step-sec", str(float(sample_step_sec)),
+        "--burned-subtitles", burned_subtitles,
+        "--ocr-fps", str(float(ocr_fps)),
+        "--ocr-crop-ratio", str(float(ocr_crop_ratio)),
+        "--ocr-width", str(int(ocr_width)),
     ]
     if subtitle:
         cmd.extend(["--subtitle", str(subtitle)])
@@ -227,6 +235,10 @@ def _build_open_command(
     allow_small_video: bool = False,
     ffmpeg_hwaccel: str = "none",
     ffmpeg_hwaccel_device: str = "",
+    burned_subtitles: str = "auto",
+    ocr_fps: float = 2.0,
+    ocr_crop_ratio: float = 0.34,
+    ocr_width: int = 960,
 ) -> tuple[list[str], Path, Path, Path]:
     source = str(source or "").strip()
     if not source:
@@ -258,6 +270,10 @@ def _build_open_command(
         "--max-sheet-sec", str(float(max_sheet_sec)),
         "--sample-step-sec", str(float(sample_step_sec)),
         "--subtitle-style-exclude", subtitle_style_exclude,
+        "--burned-subtitles", burned_subtitles,
+        "--ocr-fps", str(float(ocr_fps)),
+        "--ocr-crop-ratio", str(float(ocr_crop_ratio)),
+        "--ocr-width", str(int(ocr_width)),
     ]
     if subtitle:
         cmd.extend(["--subtitle", str(subtitle)])
@@ -724,6 +740,11 @@ def _viewing_guide(manifest: dict[str, Any], sheet: dict[str, Any]) -> str:
         columns = options.get("keyframes_per_row", "?")
         max_frames = options.get("max_keyframes", "?")
         layout = f"{columns} columns / up to {max_frames} keyframes"
+    subtitle_guidance = (
+        "The sidecar was OCR-read from burned-in image text. Treat its confidence labels as uncertainty signals and resolve doubtful wording against the visible frame."
+        if manifest.get("subtitle_source") == "burned-subtitle-ocr"
+        else "Short subtitles under keyframes are only semantic anchors. Read the sidecar subtitles below for dialogue and precise text."
+    )
     return "\n".join([
         "[viewing-guide]",
         "You are watching a span of film time compressed into a film-matinee sheet, not merely scanning an infographic.",
@@ -731,7 +752,7 @@ def _viewing_guide(manifest: dict[str, Any], sheet: dict[str, Any]) -> str:
         "Use image content as the primary source: notice character placement, composition, shot scale, movement, light, color, editing rhythm, and sound changes.",
         "Color bands between keyframes represent elapsed visual time, color, and rhythm; longer bands mean more time passed, not necessarily greater importance.",
         "The thin blue audio rail is normalized within this chunk; compare loud/quiet moments inside this chunk, not across the whole film.",
-        "Short subtitles under keyframes are only semantic anchors. Read the sidecar subtitles below for dialogue and precise text.",
+        subtitle_guidance,
         f"Layout: {layout}. Empty visual capacity is meaningful: this chunk did not need every slot.",
         "If you have a worthwhile thought, uncertainty, motif, or user-facing observation, you may think aloud or call film_note; otherwise keep watching without forcing notes.",
         "[/viewing-guide]",
@@ -849,6 +870,10 @@ def film_generate_command(
     allow_small_video: bool = False,
     ffmpeg_hwaccel: str = "none",
     ffmpeg_hwaccel_device: str = "",
+    burned_subtitles: str = "auto",
+    ocr_fps: float = 2.0,
+    ocr_crop_ratio: float = 0.34,
+    ocr_width: int = 960,
 ) -> str:
     """Return the generator command for a local film without running it."""
     cmd, out, manifest, log = _build_generate_command(
@@ -869,6 +894,10 @@ def film_generate_command(
         allow_small_video,
         ffmpeg_hwaccel,
         ffmpeg_hwaccel_device,
+        burned_subtitles,
+        ocr_fps,
+        ocr_crop_ratio,
+        ocr_width,
     )
     return "\n".join([
         f"out_dir: {out}",
@@ -898,13 +927,18 @@ def film_generate(
     allow_small_video: bool = False,
     ffmpeg_hwaccel: str = "none",
     ffmpeg_hwaccel_device: str = "",
+    burned_subtitles: str = "auto",
+    ocr_fps: float = 2.0,
+    ocr_crop_ratio: float = 0.34,
+    ocr_width: int = 960,
     background: bool = True,
 ) -> str:
     """Generate film-matinee sheets from local video/subtitles.
 
     Defaults to a background full-film run. Use film_generate_status(out_dir)
     until it reports complete, then pass the returned manifest path to
-    film_overview / film_start.
+    film_overview / film_start. On macOS, burned_subtitles='auto' uses Apple
+    Vision OCR only when no source subtitle is available.
     """
     cmd, out, manifest, log = _build_generate_command(
         video_path,
@@ -924,6 +958,10 @@ def film_generate(
         allow_small_video,
         ffmpeg_hwaccel,
         ffmpeg_hwaccel_device,
+        burned_subtitles,
+        ocr_fps,
+        ocr_crop_ratio,
+        ocr_width,
     )
     if background:
         return _start_background_job(cmd, out, manifest, log, phase="generating")
@@ -968,6 +1006,10 @@ def film_open_command(
     allow_small_video: bool = False,
     ffmpeg_hwaccel: str = "none",
     ffmpeg_hwaccel_device: str = "",
+    burned_subtitles: str = "auto",
+    ocr_fps: float = 2.0,
+    ocr_crop_ratio: float = 0.34,
+    ocr_width: int = 960,
 ) -> str:
     """Return the URL/local-source preparation and generation command without running it."""
     cmd, out, manifest, log = _build_open_command(
@@ -976,6 +1018,7 @@ def film_open_command(
         target_keyframes, max_sheets, start_time, end_time, subtitle_offset_sec,
         subtitle_style_include, subtitle_style_exclude, max_sheet_sec,
         sample_step_sec, allow_small_video, ffmpeg_hwaccel, ffmpeg_hwaccel_device,
+        burned_subtitles, ocr_fps, ocr_crop_ratio, ocr_width,
     )
     return "\n".join([
         f"out_dir: {out}",
@@ -1010,6 +1053,10 @@ def film_open(
     allow_small_video: bool = False,
     ffmpeg_hwaccel: str = "none",
     ffmpeg_hwaccel_device: str = "",
+    burned_subtitles: str = "auto",
+    ocr_fps: float = 2.0,
+    ocr_crop_ratio: float = 0.34,
+    ocr_width: int = 960,
     background: bool = True,
 ) -> str:
     """Prepare a URL or local film, discover subtitles, and generate sheets.
@@ -1017,6 +1064,8 @@ def film_open(
     URL media is downloaded into the film's private cache. Manual source
     captions are preferred over automatic captions. For local containers,
     sidecar and text-based embedded subtitles are discovered automatically.
+    On macOS, burned_subtitles='auto' then detects and OCRs burned-in text when
+    no source subtitle exists; OCR provenance and confidence stay visible.
     Use film_generate_status on the returned out_dir; film_start can begin as
     soon as the first sheet appears while later sheets continue generating.
     """
@@ -1026,6 +1075,7 @@ def film_open(
         target_keyframes, max_sheets, start_time, end_time, subtitle_offset_sec,
         subtitle_style_include, subtitle_style_exclude, max_sheet_sec,
         sample_step_sec, allow_small_video, ffmpeg_hwaccel, ffmpeg_hwaccel_device,
+        burned_subtitles, ocr_fps, ocr_crop_ratio, ocr_width,
     )
     if background:
         return _start_background_job(
@@ -1175,11 +1225,13 @@ def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
 
     sheets = []
     title = ""
+    subtitle_source = ""
     if manifest.exists():
         try:
             data = json.loads(manifest.read_text("utf-8"))
             title = data.get("title", "")
             sheets = data.get("sheets", [])
+            subtitle_source = str(data.get("subtitle_source") or "")
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -1198,6 +1250,7 @@ def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
         f"title: {title}" if title else "",
         f"sheets: {len(sheets)}",
         f"available_sheets: {len(sheets)}",
+        f"subtitle_source: {subtitle_source}" if subtitle_source else "",
     ]
     if job.get("video_path"):
         lines.append(f"video_path: {job['video_path']}")
@@ -1228,6 +1281,7 @@ def film_overview(manifest_path: str) -> str:
         f"source_url: {source_info.get('webpage_url')}" if source_info.get("webpage_url") else "",
         f"subtitle_kind: {source_info.get('subtitle_kind')}" if source_info.get("subtitle_kind") else "",
         f"subtitle_language: {source_info.get('subtitle_language')}" if source_info.get("subtitle_language") else "",
+        f"subtitle_source: {manifest.get('subtitle_source')}" if manifest.get("subtitle_source") else "",
         f"chunks: {len(manifest.get('sheets', []))}",
         f"cursor: {_cursor(path, manifest)}",
     ]

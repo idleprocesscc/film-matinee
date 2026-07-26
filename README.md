@@ -15,6 +15,7 @@
 - 批量生成 `film-matinee sheet`：关键帧 + 色带 + 音频 rail + 极短字幕锚点。
 - 用 `film_open` 直接接收 URL 或本地视频：URL 自动下载并缓存，本地 MKV 可自动发现 sidecar 或文本型内嵌字幕。
 - URL 字幕优先选人工轨，再考虑自动字幕；支持按语言顺序选择，生成器原生读取 ASS / SSA / SRT / VTT，并保留 VTT 中已有的说话人标签。
+- 没有独立字幕轨时，macOS 会自动探测烧录字幕并用 Apple Vision 按 chunk 做 OCR；sidecar 明确标注 OCR 来源和置信度。
 - URL 下载的源视频在连续 24 小时没有观影访问后自动清理；sheet、字幕、进度和批注保留，本地原片永不进入清理范围。
 - 关键帧抽取会综合镜头切换、局部色彩变化、短促 micro event、音频瞬态和长动作段覆盖；暗场有纹理/轮廓时不会被简单当作低信息。
 - 把完整字幕作为 sidecar 文本交给 AI，避免把文字全塞进图片。
@@ -36,6 +37,8 @@ pip install -r requirements.txt
 ```bash
 brew install ffmpeg yt-dlp
 ```
+
+烧录字幕 OCR 使用 macOS 自带的 Apple Vision，首次运行会用 `swiftc` 编译一个很小的本地桥接程序，因此还需安装 Xcode Command Line Tools（已有 Xcode 时无需另装）。OCR 不上传画面，也不需要 Tesseract。
 
 线性读片工作流见 [examples/FILM_MATINEE.md](examples/FILM_MATINEE.md)。旧式播放器集成见 [examples/INTEGRATION.md](examples/INTEGRATION.md)。
 
@@ -67,7 +70,9 @@ MCP 启动时会执行一次过期检查。要让 macOS 在 Claude 没有运行�
 
 URL 能力以 `yt-dlp` 实际支持和有权访问的来源为限，不绕过 DRM。登录后才能访问的来源可显式传 `cookies_from_browser="chrome"` 等参数；默认绝不读取浏览器 cookies。
 
-有些站点把字幕直接烧进视频像素，而不提供独立字幕轨。此时画面和关键帧仍保留字幕，但 sidecar 会为空；当前版本不会把像素字幕假装成可靠文本。可显式提供同步字幕文件，烧录字幕 OCR 仍属于后续能力。
+有些站点把字幕直接烧进视频像素，而不提供独立字幕轨。macOS 默认使用 `burned_subtitles="auto"`：先跨全片抽样，确认画面下方反复出现字幕型文字后，才会按 chunk 以 2 fps 识别并写入 `source/burned-subtitles.ocr.srt`。外挂、下载或内封字幕始终优先，存在时不会重复 OCR。
+
+OCR 结果不是原始字幕轨：它可能有粘词、同形字和极短台词漏识别。sidecar 会写成 `source=burned-subtitle-ocr` 并给每段附上置信度，让 AI 保留判断。可用 `burned_subtitles="off"` 关闭，或用 `"ocr"` 跳过探测并强制识别；`ocr_fps` 越高越不容易漏短台词，但处理时间也近似线性增长。当前自动 OCR 后端仅支持 macOS，其他系统仍可显式提供同步字幕文件。
 
 ## 生成视觉 Sheet
 
@@ -80,6 +85,12 @@ python3 tools/generate_film_matinee_sheets.py \
   --target-keyframes 16 \
   --out-dir .film-matinee-cache/movie-title \
   --max-sheets 0
+```
+
+没有字幕文件且画面带烧录字幕时，无需额外参数；也可显式调整：
+
+```bash
+--burned-subtitles auto --ocr-fps 2
 ```
 
 可选硬件解码/GPU 路径：
@@ -136,6 +147,7 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 
 - `film_generate(video_path, subtitle_path="", out_dir="", ...)`：从本地视频/字幕生成 sheets。
 - `film_open(source, ...)`：从 URL 或本地路径自动准备视频/字幕并后台生成；推荐的一键入口。
+- `film_open(source, burned_subtitles="auto", ocr_fps=2, ...)`：没有字幕轨时在 macOS 自动探测并 OCR 烧录字幕。
 - `film_open_command(source, ...)`：只查看素材准备和生成命令。
 - `film_generate(..., ffmpeg_hwaccel="videotoolbox")`：可选硬件解码；也可用 `auto`、`cuda`、`d3d11va`、`qsv`、`vaapi` 等 ffmpeg 支持的值。
 - `film_generate_status(out_dir)`：查看后台生成进度。
