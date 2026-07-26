@@ -26,6 +26,19 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Image
 
+try:
+    from film_matinee_source import (
+        DEFAULT_SUBTITLE_LANGUAGES,
+        default_out_dir as _default_source_out_dir,
+        is_url as _is_url_source,
+    )
+except ImportError:  # Imported as tools.film_matinee_mcp in tests.
+    from .film_matinee_source import (
+        DEFAULT_SUBTITLE_LANGUAGES,
+        default_out_dir as _default_source_out_dir,
+        is_url as _is_url_source,
+    )
+
 
 mcp = FastMCP(
     "film-matinee",
@@ -35,7 +48,10 @@ mcp = FastMCP(
         "user mentions a timecode, subtitle, or remembered event. Add notes "
         "with film_note when a chunk deserves a durable comment for the user. "
         "Use film_generate when the user has a local video/subtitle that has "
-        "not been converted into sheets yet."
+        "not been converted into sheets yet. Use film_open for a URL or when "
+        "subtitle discovery and source preparation should be automatic. Use "
+        "film_refine_chunk only after a known-important timestamp was missed; "
+        "it is a repair lens, not the normal viewing flow."
     ),
 )
 
@@ -71,6 +87,10 @@ def _annotations_path(manifest: Path) -> Path:
 
 def _generator_script() -> Path:
     return Path(__file__).resolve().parent / "generate_film_matinee_sheets.py"
+
+
+def _source_script() -> Path:
+    return Path(__file__).resolve().parent / "film_matinee_source.py"
 
 
 def _job_path(out_dir: Path) -> Path:
@@ -167,6 +187,229 @@ def _build_generate_command(
     return cmd, out, out / "manifest.json", _log_path(out)
 
 
+def _build_open_command(
+    source: str,
+    subtitle_path: str = "",
+    out_dir: str = "",
+    title: str = "",
+    subtitle_languages: str = DEFAULT_SUBTITLE_LANGUAGES,
+    max_height: int = 720,
+    cookies_from_browser: str = "",
+    refresh_source: bool = False,
+    extract_embedded_subs: bool = True,
+    layout: str = "4x4",
+    target_keyframes: int = 16,
+    max_sheets: int = 0,
+    start_time: str = "",
+    end_time: str = "",
+    subtitle_offset_sec: float = 0.0,
+    subtitle_style_include: str = "",
+    subtitle_style_exclude: str = "JP|Ruby",
+    max_sheet_sec: float = 420.0,
+    sample_step_sec: float = 1.0,
+    allow_small_video: bool = False,
+    ffmpeg_hwaccel: str = "none",
+    ffmpeg_hwaccel_device: str = "",
+) -> tuple[list[str], Path, Path, Path]:
+    source = str(source or "").strip()
+    if not source:
+        raise ValueError("source is required")
+    if not _is_url_source(source):
+        local = Path(source).expanduser().resolve()
+        if not local.exists():
+            raise FileNotFoundError(f"video not found: {local}")
+        source = str(local)
+    subtitle = Path(subtitle_path).expanduser().resolve() if subtitle_path else None
+    if subtitle is not None and not subtitle.exists():
+        raise FileNotFoundError(f"subtitle not found: {subtitle}")
+    out = Path(out_dir).expanduser().resolve() if out_dir else _default_source_out_dir(source).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    layout = _normalize_layout(layout)
+    if max_height < 0:
+        raise ValueError("max_height must be 0 or greater")
+
+    cmd = [
+        sys.executable,
+        str(_source_script()),
+        "--source", source,
+        "--out-dir", str(out),
+        "--subtitle-languages", subtitle_languages,
+        "--max-height", str(int(max_height)),
+        "--layout", layout,
+        "--target-keyframes", str(int(target_keyframes)),
+        "--max-sheets", str(int(max_sheets)),
+        "--max-sheet-sec", str(float(max_sheet_sec)),
+        "--sample-step-sec", str(float(sample_step_sec)),
+        "--subtitle-style-exclude", subtitle_style_exclude,
+    ]
+    if subtitle:
+        cmd.extend(["--subtitle", str(subtitle)])
+    if title:
+        cmd.extend(["--title", title])
+    if cookies_from_browser:
+        cmd.extend(["--cookies-from-browser", cookies_from_browser])
+    if refresh_source:
+        cmd.append("--refresh-source")
+    if not extract_embedded_subs:
+        cmd.append("--no-extract-embedded-subs")
+    if start_time:
+        seconds = _parse_timecode(start_time)
+        if seconds is None:
+            raise ValueError(f"bad start_time: {start_time}")
+        cmd.extend(["--start-time", str(seconds)])
+    if end_time:
+        seconds = _parse_timecode(end_time)
+        if seconds is None:
+            raise ValueError(f"bad end_time: {end_time}")
+        cmd.extend(["--end-time", str(seconds)])
+    if subtitle_offset_sec:
+        cmd.extend(["--subtitle-offset-sec", str(float(subtitle_offset_sec))])
+    if subtitle_style_include:
+        cmd.extend(["--subtitle-style-include", subtitle_style_include])
+    if allow_small_video:
+        cmd.append("--allow-small-video")
+    if ffmpeg_hwaccel and ffmpeg_hwaccel.lower() not in {"none", "off", "false", "0"}:
+        cmd.extend(["--ffmpeg-hwaccel", ffmpeg_hwaccel])
+    if ffmpeg_hwaccel_device:
+        cmd.extend(["--ffmpeg-hwaccel-device", ffmpeg_hwaccel_device])
+    return cmd, out, out / "manifest.json", _log_path(out)
+
+
+def _start_background_job(
+    cmd: list[str],
+    out: Path,
+    manifest: Path,
+    log: Path,
+    *,
+    source: str = "",
+    phase: str = "generating",
+) -> str:
+    job_key = str(out)
+    existing = _jobs.get(job_key)
+    if existing and existing.poll() is None:
+        return f"already running pid={existing.pid}\nout_dir: {out}\nmanifest: {manifest}\nlog: {log}"
+    saved_job = _read_job(out)
+    if (
+        str(saved_job.get("status") or "").lower() in {"running", "running-untracked"}
+        and _pid_is_running(saved_job.get("pid"))
+    ):
+        return (
+            f"already running pid={saved_job.get('pid')}\n"
+            f"phase: {saved_job.get('phase', 'running')}\n"
+            f"out_dir: {out}\nmanifest: {manifest}\nlog: {log}"
+        )
+
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.touch(exist_ok=True)
+    log.chmod(0o600)
+    log_handle = open(str(log), "ab")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            cwd=str(Path.cwd()),
+            start_new_session=True,
+        )
+    finally:
+        log_handle.close()
+    _jobs[job_key] = proc
+    _write_job(out, {
+        "status": "running",
+        "phase": phase,
+        "pid": proc.pid,
+        "started_at": _now(),
+        "source": source or None,
+        "command": cmd,
+        "manifest": str(manifest),
+        "log": str(log),
+    })
+    return "\n".join([
+        f"started pid={proc.pid}",
+        f"phase: {phase}",
+        f"out_dir: {out}",
+        f"manifest: {manifest}",
+        f"log: {log}",
+        "Call film_generate_status(out_dir) to monitor progress.",
+    ])
+
+
+def _parse_pin_time_list(value: str) -> list[float]:
+    times: list[float] = []
+    for part in str(value or "").split(","):
+        if not part.strip():
+            continue
+        seconds = _parse_timecode(part.strip())
+        if seconds is None:
+            raise ValueError(f"bad pin time: {part.strip()}")
+        times.append(round(seconds, 3))
+    if not times:
+        raise ValueError("pin_times must contain at least one timestamp")
+    return sorted(set(times))
+
+
+def _build_refine_command(
+    manifest_path: str,
+    chunk_index: int,
+    pin_times: str,
+) -> tuple[list[str], Path, Path, Path]:
+    manifest_file, manifest = _load_manifest(manifest_path)
+    sheet = _sheet_by_index(manifest, int(chunk_index))
+    video = Path(str(manifest.get("video") or "")).expanduser().resolve()
+    if not video.exists():
+        raise FileNotFoundError(f"source video not found: {video}")
+    subtitle_value = manifest.get("subtitle")
+    subtitle = Path(str(subtitle_value)).expanduser().resolve() if subtitle_value else None
+    if subtitle is not None and not subtitle.exists():
+        raise FileNotFoundError(f"subtitle not found: {subtitle}")
+    pins = _parse_pin_time_list(pin_times)
+    start, end = [float(value) for value in sheet.get("time_range", [0, 0])]
+    pins = [value for value in pins if start <= value <= end]
+    if not pins:
+        raise ValueError(
+            f"none of the pin times fall inside chunk {chunk_index}: {_fmt_time(start)}-{_fmt_time(end)}"
+        )
+
+    options = dict(manifest.get("options") or {})
+    skipped = {
+        "video", "subtitle", "out_dir", "title", "start", "end", "max_sheets",
+        "start_index", "replace_existing_sheet", "pin_times", "min_sheet_sec",
+        "max_sheet_sec", "dry_run",
+    }
+    boolean_optional = {"auto_pack_rows", "audio_rail"}
+    command = [sys.executable, str(_generator_script())]
+    for key, value in options.items():
+        if key in skipped or value is None:
+            continue
+        flag = "--" + key.replace("_", "-")
+        if key in boolean_optional:
+            command.append(flag if bool(value) else "--no-" + key.replace("_", "-"))
+        elif isinstance(value, bool):
+            if value:
+                command.append(flag)
+        elif isinstance(value, (str, int, float)):
+            command.extend([flag, str(value)])
+
+    duration = max(0.001, end - start)
+    command.extend([
+        "--video", str(video),
+        "--out-dir", str(manifest_file.parent),
+        "--title", str(manifest.get("title") or video.stem),
+        "--from", str(start),
+        "--to", str(end),
+        "--min-sheet-sec", str(duration),
+        "--max-sheet-sec", str(duration),
+        "--max-sheets", "1",
+        "--start-index", str(int(chunk_index)),
+        "--replace-existing-sheet",
+        "--pin-times", ",".join(str(value) for value in pins),
+    ])
+    if subtitle:
+        command.extend(["--subtitle", str(subtitle)])
+    out = manifest_file.parent
+    return command, out, manifest_file, _log_path(out)
+
+
 def _read_job(out_dir: Path) -> dict[str, Any]:
     path = _job_path(out_dir)
     if not path.exists():
@@ -175,6 +418,44 @@ def _read_job(out_dir: Path) -> dict[str, Any]:
         return json.loads(path.read_text("utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _job_in_progress(out_dir: Path) -> bool:
+    job = _read_job(out_dir)
+    return str(job.get("status") or "").lower() in {"running", "running-untracked"}
+
+
+def _pid_is_running(pid: Any) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+
+
+def _availability_message(manifest: Path, available: int) -> str:
+    job = _read_job(manifest.parent)
+    status = str(job.get("status") or "unknown")
+    phase = str(job.get("phase") or status)
+    if _job_in_progress(manifest.parent):
+        return "\n".join([
+            "[film-matinee-waiting]",
+            f"manifest: {manifest}",
+            f"available_sheets: {available}",
+            f"phase: {phase}",
+            "The next chunk is not generated yet. Call film_generate_status, then film_next again when available_sheets increases.",
+            "[/film-matinee-waiting]",
+        ])
+    return "\n".join([
+        "[film-matinee-end]",
+        f"manifest: {manifest}",
+        f"available_sheets: {available}",
+        f"generation_status: {status}",
+        "No later generated chunk is available.",
+        "[/film-matinee-end]",
+    ])
 
 
 def _write_job(out_dir: Path, data: dict[str, Any]) -> None:
@@ -474,7 +755,11 @@ def _chunk_text(
             ns, ne = next_sheet.get("time_range", [0, 0])
             next_line = f"next: chunk {int(next_sheet.get('index', cursor_after)):03d} {_fmt_time(float(ns))}-{_fmt_time(float(ne))}"
         else:
-            next_line = "next: end of available generated sheets"
+            next_line = (
+                "next: waiting for the next generated sheet"
+                if _job_in_progress(manifest_path.parent)
+                else "next: end of available generated sheets"
+            )
 
     lines = [
         "[film-matinee-chunk]",
@@ -607,36 +892,8 @@ def film_generate(
         ffmpeg_hwaccel,
         ffmpeg_hwaccel_device,
     )
-    job_key = str(out)
-    existing = _jobs.get(job_key)
-    if existing and existing.poll() is None:
-        return f"already running pid={existing.pid}\nout_dir: {out}\nmanifest: {manifest}\nlog: {log}"
-
     if background:
-        log_handle = open(str(log), "ab")
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            cwd=str(Path.cwd()),
-            start_new_session=True,
-        )
-        _jobs[job_key] = proc
-        _write_job(out, {
-            "status": "running",
-            "pid": proc.pid,
-            "started_at": _now(),
-            "command": cmd,
-            "manifest": str(manifest),
-            "log": str(log),
-        })
-        return "\n".join([
-            f"started pid={proc.pid}",
-            f"out_dir: {out}",
-            f"manifest: {manifest}",
-            f"log: {log}",
-            "Call film_generate_status(out_dir) to monitor progress.",
-        ])
+        return _start_background_job(cmd, out, manifest, log, phase="generating")
 
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path.cwd()))
     _write_job(out, {
@@ -648,9 +905,148 @@ def film_generate(
         "log": str(log),
     })
     log.write_text((result.stdout or "") + (result.stderr or ""), "utf-8")
+    log.chmod(0o600)
     if result.returncode != 0:
         raise RuntimeError(f"film generation failed with code {result.returncode}; see {log}")
     return f"generated\nmanifest: {manifest}\nlog: {log}"
+
+
+@mcp.tool()
+def film_open_command(
+    source: str,
+    subtitle_path: str = "",
+    out_dir: str = "",
+    title: str = "",
+    subtitle_languages: str = DEFAULT_SUBTITLE_LANGUAGES,
+    max_height: int = 720,
+    cookies_from_browser: str = "",
+    refresh_source: bool = False,
+    extract_embedded_subs: bool = True,
+    layout: str = "4x4",
+    target_keyframes: int = 16,
+    max_sheets: int = 0,
+    start_time: str = "",
+    end_time: str = "",
+    subtitle_offset_sec: float = 0.0,
+    subtitle_style_include: str = "",
+    subtitle_style_exclude: str = "JP|Ruby",
+    max_sheet_sec: float = 420.0,
+    sample_step_sec: float = 1.0,
+    allow_small_video: bool = False,
+    ffmpeg_hwaccel: str = "none",
+    ffmpeg_hwaccel_device: str = "",
+) -> str:
+    """Return the URL/local-source preparation and generation command without running it."""
+    cmd, out, manifest, log = _build_open_command(
+        source, subtitle_path, out_dir, title, subtitle_languages, max_height,
+        cookies_from_browser, refresh_source, extract_embedded_subs, layout,
+        target_keyframes, max_sheets, start_time, end_time, subtitle_offset_sec,
+        subtitle_style_include, subtitle_style_exclude, max_sheet_sec,
+        sample_step_sec, allow_small_video, ffmpeg_hwaccel, ffmpeg_hwaccel_device,
+    )
+    return "\n".join([
+        f"out_dir: {out}",
+        f"manifest: {manifest}",
+        f"log: {log}",
+        "command:",
+        " ".join(shlex.quote(part) for part in cmd),
+    ])
+
+
+@mcp.tool()
+def film_open(
+    source: str,
+    subtitle_path: str = "",
+    out_dir: str = "",
+    title: str = "",
+    subtitle_languages: str = DEFAULT_SUBTITLE_LANGUAGES,
+    max_height: int = 720,
+    cookies_from_browser: str = "",
+    refresh_source: bool = False,
+    extract_embedded_subs: bool = True,
+    layout: str = "4x4",
+    target_keyframes: int = 16,
+    max_sheets: int = 0,
+    start_time: str = "",
+    end_time: str = "",
+    subtitle_offset_sec: float = 0.0,
+    subtitle_style_include: str = "",
+    subtitle_style_exclude: str = "JP|Ruby",
+    max_sheet_sec: float = 420.0,
+    sample_step_sec: float = 1.0,
+    allow_small_video: bool = False,
+    ffmpeg_hwaccel: str = "none",
+    ffmpeg_hwaccel_device: str = "",
+    background: bool = True,
+) -> str:
+    """Prepare a URL or local film, discover subtitles, and generate sheets.
+
+    URL media is downloaded into the film's private cache. Manual source
+    captions are preferred over automatic captions. For local containers,
+    sidecar and text-based embedded subtitles are discovered automatically.
+    Use film_generate_status on the returned out_dir; film_start can begin as
+    soon as the first sheet appears while later sheets continue generating.
+    """
+    cmd, out, manifest, log = _build_open_command(
+        source, subtitle_path, out_dir, title, subtitle_languages, max_height,
+        cookies_from_browser, refresh_source, extract_embedded_subs, layout,
+        target_keyframes, max_sheets, start_time, end_time, subtitle_offset_sec,
+        subtitle_style_include, subtitle_style_exclude, max_sheet_sec,
+        sample_step_sec, allow_small_video, ffmpeg_hwaccel, ffmpeg_hwaccel_device,
+    )
+    if background:
+        return _start_background_job(
+            cmd, out, manifest, log, source=source, phase="preparing",
+        )
+
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path.cwd()))
+    log.write_text((result.stdout or "") + (result.stderr or ""), "utf-8")
+    log.chmod(0o600)
+    if result.returncode != 0:
+        raise RuntimeError(f"film source preparation failed with code {result.returncode}; see {log}")
+    return f"prepared and generated\nmanifest: {manifest}\nlog: {log}"
+
+
+@mcp.tool()
+def film_refine_chunk_command(
+    manifest_path: str,
+    chunk_index: int,
+    pin_times: str,
+) -> str:
+    """Return a command that regenerates one chunk with required visual timestamps."""
+    cmd, out, manifest, log = _build_refine_command(manifest_path, chunk_index, pin_times)
+    return "\n".join([
+        f"out_dir: {out}",
+        f"manifest: {manifest}",
+        f"log: {log}",
+        "command:",
+        " ".join(shlex.quote(part) for part in cmd),
+    ])
+
+
+@mcp.tool()
+def film_refine_chunk(
+    manifest_path: str,
+    chunk_index: int,
+    pin_times: str,
+    background: bool = True,
+) -> str:
+    """Regenerate one existing chunk while pinning known-important moments.
+
+    This is a repair/detail lens after linear viewing, not the normal selection
+    path. Later chunks, cursor state, notes, and the source manifest are kept.
+    """
+    cmd, out, manifest, log = _build_refine_command(manifest_path, chunk_index, pin_times)
+    if background:
+        return _start_background_job(
+            cmd, out, manifest, log, source=str(manifest), phase="refining",
+        )
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path.cwd()))
+    log.write_text((result.stdout or "") + (result.stderr or ""), "utf-8")
+    log.chmod(0o600)
+    if result.returncode != 0:
+        raise RuntimeError(f"chunk refinement failed with code {result.returncode}; see {log}")
+    return f"refined chunk {int(chunk_index):03d}\nmanifest: {manifest}\nlog: {log}"
 
 
 @mcp.tool()
@@ -704,9 +1100,20 @@ def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
         f"manifest: {manifest}",
         f"log: {log}",
         f"status: {job.get('status', 'unknown')}",
+        f"phase: {job.get('phase')}" if job.get("phase") else "",
+        f"source: {job.get('source')}" if job.get("source") else "",
         f"title: {title}" if title else "",
         f"sheets: {len(sheets)}",
+        f"available_sheets: {len(sheets)}",
     ]
+    if job.get("video_path"):
+        lines.append(f"video_path: {job['video_path']}")
+    if job.get("subtitle_path"):
+        lines.append(f"subtitle_path: {job['subtitle_path']}")
+    if job.get("source_reused") is not None:
+        lines.append(f"source_reused: {bool(job['source_reused'])}")
+    if job.get("error"):
+        lines.append(f"error: {job['error']}")
     if sheets:
         start, end = sheets[-1].get("time_range", [0, 0])
         lines.append(f"latest: {int(sheets[-1].get('index', 0)):03d} {_fmt_time(float(start))}-{_fmt_time(float(end))}")
@@ -719,9 +1126,14 @@ def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
 def film_overview(manifest_path: str) -> str:
     """Summarize available generated chunks for a film."""
     path, manifest = _load_manifest(manifest_path)
+    source_info = manifest.get("source_info") or {}
     lines = [
         f"title: {manifest.get('title', 'Film')}",
         f"manifest: {path}",
+        f"source_kind: {source_info.get('kind')}" if source_info.get("kind") else "",
+        f"source_url: {source_info.get('webpage_url')}" if source_info.get("webpage_url") else "",
+        f"subtitle_kind: {source_info.get('subtitle_kind')}" if source_info.get("subtitle_kind") else "",
+        f"subtitle_language: {source_info.get('subtitle_language')}" if source_info.get("subtitle_language") else "",
         f"chunks: {len(manifest.get('sheets', []))}",
         f"cursor: {_cursor(path, manifest)}",
     ]
@@ -733,7 +1145,7 @@ def film_overview(manifest_path: str) -> str:
             f"k={len(sheet.get('keyframes', []))} "
             f"subs={sheet.get('subtitle_count', 0)}"
         )
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if line)
 
 
 @mcp.tool(structured_output=False)
@@ -742,7 +1154,7 @@ def film_start(manifest_path: str, start_index: int = 0) -> list[Any]:
     path, manifest = _load_manifest(manifest_path)
     sheets = manifest.get("sheets", [])
     if not sheets:
-        raise ValueError("manifest has no sheets")
+        return [_availability_message(path, 0)]
     start_index = max(0, min(int(start_index), len(sheets) - 1))
     _set_cursor(path, start_index + 1, manifest)
     key = str(path)
@@ -757,8 +1169,10 @@ def film_next(manifest_path: str) -> list[Any]:
     path, manifest = _load_manifest(manifest_path)
     sheets = manifest.get("sheets", [])
     if not sheets:
-        raise ValueError("manifest has no sheets")
-    cursor = min(_cursor(path, manifest), len(sheets) - 1)
+        return [_availability_message(path, 0)]
+    cursor = _cursor(path, manifest)
+    if cursor >= len(sheets):
+        return [_availability_message(path, len(sheets))]
     _set_cursor(path, cursor + 1, manifest)
     key = str(path)
     include_guide = key not in _guide_shown

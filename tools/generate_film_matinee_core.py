@@ -81,6 +81,27 @@ def fmt_time(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def parse_timecode(value: str) -> float:
+    value = str(value or "").strip()
+    if re.fullmatch(r"\d+(?:\.\d+)?", value):
+        return float(value)
+    parts = value.split(":")
+    if not parts or not all(re.fullmatch(r"\d+(?:\.\d+)?", part) for part in parts):
+        raise ValueError(f"bad timecode: {value}")
+    numbers = [float(part) for part in parts]
+    if len(numbers) == 2:
+        return numbers[0] * 60 + numbers[1]
+    if len(numbers) == 3:
+        return numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+    raise ValueError(f"bad timecode: {value}")
+
+
+def parse_pin_times(value: str) -> list[float]:
+    if not str(value or "").strip():
+        return []
+    return sorted({round(parse_timecode(part), 3) for part in str(value).split(",") if part.strip()})
+
+
 def clean_subtitle_text(text: str) -> str:
     value = str(text or "")
     value = re.sub(r"\{[^}]*\}", "", value)
@@ -115,6 +136,14 @@ def parse_ass_time(value: str) -> float:
     return int(h) * 3600 + int(m) * 60 + int(s) + int(cs.ljust(2, "0")) / 100
 
 
+def parse_vtt_time(value: str) -> float:
+    match = re.match(r"(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{1,3})", value.strip())
+    if not match:
+        raise ValueError(f"bad VTT timestamp: {value}")
+    h, m, s, ms = match.groups()
+    return int(h or 0) * 3600 + int(m) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000
+
+
 def parse_srt(path: Path) -> list[Cue]:
     text = path.read_text("utf-8-sig", "ignore").replace("\r\n", "\n").replace("\r", "\n")
     cues: list[Cue] = []
@@ -134,6 +163,56 @@ def parse_srt(path: Path) -> list[Cue]:
     for index, cue in enumerate(cues):
         cue.id = cue_id(cue, index)
     return cues
+
+
+def parse_vtt(path: Path) -> list[Cue]:
+    """Parse WebVTT, collapsing rolling duplicates from auto captions."""
+    text = path.read_text("utf-8-sig", "ignore").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    cues: list[Cue] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if "-->" not in line:
+            index += 1
+            continue
+        stamps = re.findall(r"(?:(?:\d+):)?\d{2}:\d{2}[.,]\d{1,3}", line)
+        if len(stamps) < 2:
+            index += 1
+            continue
+        index += 1
+        body_lines: list[str] = []
+        while index < len(lines) and lines[index].strip():
+            raw_line = re.sub(
+                r"<v(?:\.[^ >]+)*\s+([^>]+)>",
+                lambda match: f"[{match.group(1).strip()}] ",
+                lines[index],
+                flags=re.IGNORECASE,
+            )
+            cleaned = clean_subtitle_text(raw_line)
+            if cleaned:
+                body_lines.append(cleaned)
+            index += 1
+        body = clean_subtitle_text(" ".join(body_lines))
+        if body:
+            try:
+                cues.append(Cue("", parse_vtt_time(stamps[0]), parse_vtt_time(stamps[1]), body))
+            except ValueError:
+                pass
+        index += 1
+
+    deduped: list[Cue] = []
+    for cue in cues:
+        if deduped and cue.text == deduped[-1].text:
+            deduped[-1].end = max(deduped[-1].end, cue.end)
+            continue
+        if deduped and cue.text.startswith(deduped[-1].text + " "):
+            deduped[-1].text = cue.text
+            deduped[-1].end = max(deduped[-1].end, cue.end)
+            continue
+        cue.id = cue_id(cue, len(deduped))
+        deduped.append(cue)
+    return deduped
 
 
 _MAX_STYLE_REGEX_LEN = 200
@@ -195,8 +274,10 @@ def parse_subtitles(path: Path | None, include_style: str, exclude_style: str) -
     suffix = path.suffix.lower()
     if suffix == ".srt":
         return parse_srt(path)
-    if suffix == ".ass":
+    if suffix in {".ass", ".ssa"}:
         return parse_ass(path, include_style, exclude_style)
+    if suffix == ".vtt":
+        return parse_vtt(path)
     raise ValueError(f"unsupported subtitle format: {path}")
 
 
@@ -1072,9 +1153,22 @@ def dedupe_keyframe_candidates(
     samples: list[dict] | None = None,
 ) -> list[Selection]:
     deduped: list[Selection] = []
-    for item in sorted(candidates, key=lambda sel: sel.score, reverse=True):
+    pinned = sorted(
+        [item for item in candidates if item.reason == "pinned"],
+        key=lambda item: item.time,
+    )
+    regular = sorted(
+        [item for item in candidates if item.reason != "pinned"],
+        key=lambda item: item.score,
+        reverse=True,
+    )
+    for item in [*pinned, *regular]:
         if len(deduped) >= max_count:
             break
+        if item.reason == "pinned":
+            if all(abs(existing.time - item.time) >= 0.01 for existing in deduped):
+                deduped.append(item)
+            continue
         if all(
             abs(existing.time - item.time) >= max(1, options.min_micro_keyframe_gap_sec)
             and (
@@ -1091,6 +1185,16 @@ def pick_keyframe_selections(samples: list[dict], start: float, end: float, cues
     segments = build_visual_segments(samples, start, end, options)
     max_count = max(2, int(options.max_keyframes))
     candidates: list[Selection] = []
+
+    for pin_time in getattr(options, "pin_times", []):
+        if start - 0.001 <= pin_time <= end + 0.001:
+            candidates.append(Selection(
+                pin_time,
+                1000.0,
+                "pinned",
+                Segment(max(start, pin_time - 0.25), min(end, pin_time + 0.25)),
+                pin_time,
+            ))
 
     for segment in segments:
         pick = pick_segment_keyframe(segment, samples, cues, [item.time for item in candidates], options)
@@ -1811,6 +1915,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--to", dest="end", type=float)
     parser.add_argument("--max-sheets", type=int, default=3, help="0 means no explicit limit.")
     parser.add_argument("--start-index", type=int, default=0)
+    parser.add_argument(
+        "--replace-existing-sheet",
+        action="store_true",
+        help="Replace start-index in an existing manifest while preserving later sheets.",
+    )
+    parser.add_argument(
+        "--pin-times",
+        type=parse_pin_times,
+        default=[],
+        help="Comma-separated absolute timestamps that must compete as pinned keyframes.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--layout", type=parse_layout, default=(4, 4), help="Grid capacity, e.g. 4x4, 5x4, or 4x3.")
     parser.add_argument("--subtitle-style-include", default="", help="Regex for ASS styles to include.")
@@ -1907,16 +2022,32 @@ def main() -> int:
     cues = shift_cues(cues, options.subtitle_offset_sec)
     manifest = build_manifest(video, subtitle, probe, title, options)
     manifest_path = out_dir / "manifest.json"
-    if options.start_index > 0 and manifest_path.exists():
+    replacing = bool(options.replace_existing_sheet)
+    if replacing and not manifest_path.exists():
+        raise RuntimeError("--replace-existing-sheet requires an existing manifest.json")
+    if (options.start_index > 0 or replacing) and manifest_path.exists():
         try:
             manifest = json.loads(manifest_path.read_text("utf-8"))
-            manifest["options"] = build_manifest(video, subtitle, probe, title, options)["options"]
-            manifest["sheets"] = [
-                item for item in manifest.get("sheets", [])
-                if int(item.get("index", -1)) < options.start_index
-            ]
-        except (OSError, json.JSONDecodeError):
-            pass
+            if not options.title:
+                title = str(manifest.get("title") or title)
+            if replacing:
+                if not any(
+                    int(item.get("index", -1)) == options.start_index
+                    for item in manifest.get("sheets", [])
+                ):
+                    raise RuntimeError(f"sheet index not found: {options.start_index}")
+                manifest["sheets"] = [
+                    item for item in manifest.get("sheets", [])
+                    if int(item.get("index", -1)) != options.start_index
+                ]
+            else:
+                manifest["options"] = build_manifest(video, subtitle, probe, title, options)["options"]
+                manifest["sheets"] = [
+                    item for item in manifest.get("sheets", [])
+                    if int(item.get("index", -1)) < options.start_index
+                ]
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"could not load existing manifest: {manifest_path}") from exc
 
     print(f"[film-matinee] video={video}")
     print(f"[film-matinee] duration={fmt_time(duration)} requested={fmt_time(start)}-{fmt_time(end)}")
@@ -1929,8 +2060,32 @@ def main() -> int:
     limit = options.max_sheets if options.max_sheets > 0 else math.inf
     while current < end - 0.001 and generated < limit:
         print(f"[film-matinee] sheet {index:03d} from {fmt_time(current)}", flush=True)
-        item = process_sheet(video, cues, title, current, end, index, out_dir, options)
+        sheet_options = options
+        natural_end = current + options.max_sheet_sec
+        trailing = end - natural_end
+        tail_threshold = max(0.25, min(1.0, options.sample_step_sec))
+        if 0 < trailing < tail_threshold:
+            sheet_options = argparse.Namespace(**{
+                **vars(options),
+                "max_sheet_sec": end - current,
+            })
+        item = process_sheet(video, cues, title, current, end, index, out_dir, sheet_options)
+        if replacing:
+            item["refinement"] = {
+                "pin_times": options.pin_times,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            manifest.setdefault("refinements", []).append({
+                "sheet_index": index,
+                "time_range": item["time_range"],
+                "pin_times": options.pin_times,
+                "generated_at": item["refinement"]["generated_at"],
+            })
         manifest["sheets"].append(item)
+        manifest["sheets"] = sorted(
+            manifest["sheets"],
+            key=lambda sheet: int(sheet.get("index", 0)),
+        )
         _tmp = manifest_path.with_suffix(".json.tmp")
         _tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")
         _tmp.replace(manifest_path)
@@ -1942,6 +2097,8 @@ def main() -> int:
         )
         index += 1
         generated += 1
+        if replacing:
+            break
         if current >= end - 0.001:
             break
 

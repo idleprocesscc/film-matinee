@@ -4,11 +4,17 @@
 
 `film-matinee` 把一部电影切成 AI 可以线性阅读的 chunk。每个 chunk 由一张视觉 sheet、一份字幕 sidecar 和一组可同步批注组成：AI 可以像读书一样一节一节“看”电影，也可以在值得停下的地方留下评论，用户继续在评论下聊天。
 
+> **特别致谢：[bradautomates/claude-video](https://github.com/bradautomates/claude-video)**
+>
+> 它的 URL 取片、原生字幕优先、VTT 清理和 Agent Skill 工作流为 `film-matinee` 的自动素材入口提供了关键启发。`film-matinee` 保留自己的长片 sheet、色带、音频 rail、线性 chunk 与共享批注核心，并在其帮助下补上了从 URL 到开场的完整前置流程。
+
 这个项目的灵感来自 [Echoes0302/clove-cinema](https://github.com/Echoes0302/clove-cinema)。`clove-cinema` 提供极简本地放映室；`film-matinee` 作为 AI 读片与观影批注的补足工具，专注于视觉压缩、字幕同步、MCP 线性阅读和共享批注。
 
 ## 现在能做什么
 
 - 批量生成 `film-matinee sheet`：关键帧 + 色带 + 音频 rail + 极短字幕锚点。
+- 用 `film_open` 直接接收 URL 或本地视频：URL 自动下载并缓存，本地 MKV 可自动发现 sidecar 或文本型内嵌字幕。
+- URL 字幕优先选人工轨，再考虑自动字幕；支持按语言顺序选择，生成器原生读取 ASS / SSA / SRT / VTT，并保留 VTT 中已有的说话人标签。
 - 关键帧抽取会综合镜头切换、局部色彩变化、短促 micro event、音频瞬态和长动作段覆盖；暗场有纹理/轮廓时不会被简单当作低信息。
 - 把完整字幕作为 sidecar 文本交给 AI，避免把文字全塞进图片。
 - 用 MCP 工具 `film_start` / `film_next` 让 AI 按顺序读 chunk。
@@ -24,7 +30,37 @@ cd film-matinee
 pip install -r requirements.txt
 ```
 
+本地生成需要 `ffmpeg` / `ffprobe`；直接打开 URL 还需要 `yt-dlp`。macOS 可用：
+
+```bash
+brew install ffmpeg yt-dlp
+```
+
 线性读片工作流见 [examples/FILM_MATINEE.md](examples/FILM_MATINEE.md)。旧式播放器集成见 [examples/INTEGRATION.md](examples/INTEGRATION.md)。
+
+## 从 URL 或本地片源直接开场
+
+注册 MCP 后，最短用法是把链接或路径交给 `film_open`：
+
+```text
+film_open(
+  source="https://example.com/video",
+  layout="4x4",
+  ffmpeg_hwaccel="videotoolbox"
+)
+```
+
+它会在 `.film-matinee-cache/` 下建立稳定的私有缓存，依次经历 `probing -> downloading -> generating -> complete`。用返回的 `out_dir` 查看进度：
+
+```text
+film_generate_status(out_dir)
+```
+
+第一张 sheet 写入 manifest 后即可调用 `film_start`，不必等整部片全部生成；如果 AI 读得比后台快，`film_next` 会明确返回 waiting，而不会重复上一节。缓存中的 `source/source.json` 只保留必要来源信息，不保存 yt-dlp 的完整原始元数据。
+
+本地视频也可以使用同一个入口：未提供 `subtitle_path` 时，会先找同名 `.ass` / `.ssa` / `.srt` / `.vtt`，再尝试提取 MKV 等容器里的文本字幕。图片型 PGS/VobSub 不会被误当成文本字幕。
+
+URL 能力以 `yt-dlp` 实际支持和有权访问的来源为限，不绕过 DRM。登录后才能访问的来源可显式传 `cookies_from_browser="chrome"` 等参数；默认绝不读取浏览器 cookies。
 
 ## 生成视觉 Sheet
 
@@ -92,6 +128,8 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 常用工具：
 
 - `film_generate(video_path, subtitle_path="", out_dir="", ...)`：从本地视频/字幕生成 sheets。
+- `film_open(source, ...)`：从 URL 或本地路径自动准备视频/字幕并后台生成；推荐的一键入口。
+- `film_open_command(source, ...)`：只查看素材准备和生成命令。
 - `film_generate(..., ffmpeg_hwaccel="videotoolbox")`：可选硬件解码；也可用 `auto`、`cuda`、`d3d11va`、`qsv`、`vaapi` 等 ffmpeg 支持的值。
 - `film_generate_status(out_dir)`：查看后台生成进度。
 - `film_generate_command(video_path, ...)`：只生成命令，不执行。
@@ -100,6 +138,7 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 - `film_next(manifest_path)`：继续下一节。
 - `film_chunk(manifest_path, index)`：读取指定 chunk。
 - `film_locate(manifest_path, timecode="", text="")`：兜底定位。
+- `film_refine_chunk(manifest_path, chunk_index, pin_times)`：发现遗漏时只重做该节，让指定时刻作为必保候选参与竞争，并保留后续 chunks、游标和批注。
 - `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
 - `film_reply(manifest_path, note_id, text, author="user")`：把聊天挂在批注下。
 
@@ -249,6 +288,8 @@ iconv -f GBK -t UTF-8 input.srt > output.srt
 MIT
 
 The local film server portions include code adapted from [Echoes0302/clove-cinema](https://github.com/Echoes0302/clove-cinema), which states MIT licensing in its README. See [NOTICE](NOTICE) for attribution.
+
+The source-ingestion and WebVTT workflow is inspired by and includes adapted ideas from [bradautomates/claude-video](https://github.com/bradautomates/claude-video), Copyright (c) 2026 Bradley Bonanno, under the MIT License. See [NOTICE](NOTICE) for the full attribution.
 
 ## Contributors
 

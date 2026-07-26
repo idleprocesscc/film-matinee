@@ -2,6 +2,31 @@
 
 `film-matinee` 是给 AI 线性读片的工作流：一部电影先被切成多个 chunk，每个 chunk 有一张视觉 sheet、一个字幕 sidecar、一份可同步的批注文件。正常观影用 `film_next` 一节一节读，`film_locate` 只在上下文太杂或用户明确提到时间/台词时兜底定位。
 
+URL 素材入口受 [bradautomates/claude-video](https://github.com/bradautomates/claude-video) 的 `yt-dlp`、原生字幕优先与 VTT 工作流启发；长片视觉压缩、线性 chunks 和批注仍由 film-matinee 处理。
+
+## 一句话导入 URL 或本地电影
+
+Claude 已注册 MCP 时，推荐直接调用：
+
+```text
+film_open(
+  source="https://example.com/video",
+  layout="4x4",
+  subtitle_languages="zh-Hans,zh-Hant,zh.*,en-orig,en.*,ja.*",
+  ffmpeg_hwaccel="videotoolbox"
+)
+```
+
+`source` 也可以是本地 `.mkv` / `.mp4` 路径。没有显式传字幕时，本地视频会先寻找同名 sidecar，再尝试提取文本型内嵌字幕；URL 会优先人工字幕，再选择自动字幕。VTT 原本带有 `<v Speaker>` 时会保留为 `[Speaker]`，不会在清理标签时丢掉已有角色信息。默认不会读取浏览器 cookies，需要时再显式传 `cookies_from_browser="chrome"`。
+
+拿返回的 `out_dir` 看进度：
+
+```text
+film_generate_status(out_dir)
+```
+
+状态会显示 `phase: probing / downloading / generating / complete` 和 `available_sheets`。只要 `available_sheets` 大于 0，就能立刻 `film_start(manifest)`；追上后台进度时，`film_next` 会返回 waiting，稍后继续即可。
+
 ## 生成 Sheet
 
 ```bash
@@ -43,6 +68,8 @@ python3 tools/generate_film_matinee_sheets.py \
 
 常用工具：
 
+- `film_open(source, ...)`：URL / 本地路径的一键入口，自动准备素材并生成。
+- `film_open_command(source, ...)`：只返回准备命令，不执行。
 - `film_generate(video_path, subtitle_path="", out_dir="", ...)`：从本地视频/字幕生成 sheets。默认后台运行，完成后读返回的 `manifest`。
 - `film_generate_status(out_dir)`：查看后台生成进度和最新 sheet。
 - `film_generate_command(video_path, ...)`：只返回命令，适合用户想先检查参数时。
@@ -51,6 +78,7 @@ python3 tools/generate_film_matinee_sheets.py \
 - `film_next(manifest_path)`：正常线性观影。
 - `film_chunk(manifest_path, index)`：直接读某节。
 - `film_locate(manifest_path, timecode="", text="")`：兜底检索。
+- `film_refine_chunk(manifest_path, chunk_index, pin_times="01:30:39")`：已知某个短事件遗漏时重做单节，指定时刻优先保留；后续 chunks、游标和批注不变。
 - `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
 - `film_reply(manifest_path, note_id, text, author="user")`：把聊天回复挂到某条批注下。
 - `film_notes(manifest_path, chunk_index=None)`：读批注。
@@ -67,7 +95,7 @@ python3 tools/generate_film_matinee_sheets.py \
 
 连续调用 `film_next` 时会省略这段完整 tips，避免正常观影流里反复打断。
 
-### 让 Claude 直接导入
+### 让 Claude 从手动准备的本地资源导入
 
 如果 Claude Code 已经注册了 MCP，也能直接从本地资源开始：
 
@@ -90,6 +118,20 @@ film_start(".film-matinee-cache/movie-title/manifest.json")
 ```
 
 多部电影不会串台：每部电影一个 `out_dir`，游标状态和批注都存在这个目录里。导入新片时换一个新的 `out_dir` 即可。
+
+### 局部补镜头
+
+主流程仍然依靠无 AI 的通用视觉/音频算法。当用户或 AI 已经知道某个短事件发生在准确时刻，但 sheet 没保留下来时，不需要重跑全片：
+
+```text
+film_refine_chunk(
+  manifest_path="/path/to/manifest.json",
+  chunk_index=7,
+  pin_times="01:30:39,01:30:42"
+)
+```
+
+pin 是“让这些时刻进入本节关键帧竞争并优先保留”，不是给所有电影硬编码特殊规则。它是线性观影后的修补镜头，不取代正常选帧，也不把流程改成 search-first。
 
 ## 批注同步
 
