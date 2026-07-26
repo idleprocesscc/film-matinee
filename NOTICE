@@ -6,9 +6,10 @@ Special thanks: bradautomates/claude-video
 
   https://github.com/bradautomates/claude-video
 
-claude-video's URL ingestion, native-caption-first, WebVTT cleanup, and agent
-workflow provided important inspiration for film-matinee's source preparation
-layer. film-matinee includes adapted workflow and parsing ideas from that
+claude-video's URL ingestion, native-caption-first, WebVTT cleanup,
+Whisper-compatible multipart transcription, and agent workflow provided
+important inspiration for film-matinee's source preparation and independent
+ASR track. film-matinee includes adapted workflow and parsing ideas from that
 project while retaining its own long-form visual sheets, color bands, audio
 rails, linear chunk reader, and shared annotation system.
 

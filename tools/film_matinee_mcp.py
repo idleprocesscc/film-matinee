@@ -66,8 +66,10 @@ mcp = FastMCP(
         "not been converted into sheets yet. Use film_open for a URL or when "
         "subtitle discovery and source preparation should be automatic. Use "
         "film_refine_chunk only after a known-important timestamp was missed; "
-        "it is a repair lens, not the normal viewing flow. URL-downloaded source "
-        "media expires after 24 hours without viewing activity; sheets, subtitles, "
+        "it is a repair lens, not the normal viewing flow. "
+        "Use film_focus_range when a specific short span deserves denser visual "
+        "inspection without changing the linear cursor or canonical chunks. "
+        "URL-downloaded source media expires after 24 hours without viewing activity; sheets, subtitles, "
         "progress, and notes remain available."
     ),
 )
@@ -157,6 +159,11 @@ def _build_generate_command(
     ocr_fps: float = 2.0,
     ocr_crop_ratio: float = 0.34,
     ocr_width: int = 960,
+    audio_transcript: str = "auto",
+    asr_model: str = "medium",
+    asr_language: str = "",
+    asr_device: str = "cpu",
+    asr_context_sec: float = 1.5,
 ) -> tuple[list[str], Path, Path, Path]:
     video = Path(video_path).expanduser().resolve()
     if not video.exists():
@@ -183,6 +190,11 @@ def _build_generate_command(
         "--ocr-fps", str(float(ocr_fps)),
         "--ocr-crop-ratio", str(float(ocr_crop_ratio)),
         "--ocr-width", str(int(ocr_width)),
+        "--audio-transcript", audio_transcript,
+        "--asr-model", asr_model,
+        "--asr-language", asr_language,
+        "--asr-device", asr_device,
+        "--asr-context-sec", str(float(asr_context_sec)),
     ]
     if subtitle:
         cmd.extend(["--subtitle", str(subtitle)])
@@ -239,6 +251,11 @@ def _build_open_command(
     ocr_fps: float = 2.0,
     ocr_crop_ratio: float = 0.34,
     ocr_width: int = 960,
+    audio_transcript: str = "auto",
+    asr_model: str = "medium",
+    asr_language: str = "",
+    asr_device: str = "cpu",
+    asr_context_sec: float = 1.5,
 ) -> tuple[list[str], Path, Path, Path]:
     source = str(source or "").strip()
     if not source:
@@ -274,6 +291,11 @@ def _build_open_command(
         "--ocr-fps", str(float(ocr_fps)),
         "--ocr-crop-ratio", str(float(ocr_crop_ratio)),
         "--ocr-width", str(int(ocr_width)),
+        "--audio-transcript", audio_transcript,
+        "--asr-model", asr_model,
+        "--asr-language", asr_language,
+        "--asr-device", asr_device,
+        "--asr-context-sec", str(float(asr_context_sec)),
     ]
     if subtitle:
         cmd.extend(["--subtitle", str(subtitle)])
@@ -395,6 +417,14 @@ def _build_refine_command(
     subtitle = Path(str(subtitle_value)).expanduser().resolve() if subtitle_value else None
     if subtitle is not None and not subtitle.exists():
         raise FileNotFoundError(f"subtitle not found: {subtitle}")
+    audio_transcript_value = manifest.get("audio_transcript")
+    audio_transcript = (
+        Path(str(audio_transcript_value)).expanduser().resolve()
+        if audio_transcript_value
+        else None
+    )
+    if audio_transcript is not None and not audio_transcript.exists():
+        raise FileNotFoundError(f"audio transcript not found: {audio_transcript}")
     pins = _parse_pin_time_list(pin_times)
     start, end = [float(value) for value in sheet.get("time_range", [0, 0])]
     pins = [value for value in pins if start <= value <= end]
@@ -408,6 +438,7 @@ def _build_refine_command(
         "video", "subtitle", "out_dir", "title", "start", "end", "max_sheets",
         "start_index", "replace_existing_sheet", "pin_times", "min_sheet_sec",
         "max_sheet_sec", "dry_run",
+        "audio_transcript",
     }
     boolean_optional = {"auto_pack_rows", "audio_rail"}
     command = [sys.executable, str(_generator_script())]
@@ -439,6 +470,13 @@ def _build_refine_command(
     ])
     if subtitle:
         command.extend(["--subtitle", str(subtitle)])
+    if audio_transcript:
+        asr_info = dict(manifest.get("audio_transcript_info") or {})
+        command.extend([
+            "--audio-transcript", "off",
+            "--audio-transcript-file", str(audio_transcript),
+            "--asr-track-backend", str(asr_info.get("backend") or "existing"),
+        ])
     out = manifest_file.parent
     return command, out, manifest_file, _log_path(out)
 
@@ -558,13 +596,9 @@ def _touch_cache_safely(out_dir: Path) -> None:
 
 
 @contextmanager
-def _annotations_lock(manifest: Path):
-    """Acquire an exclusive lock around annotation read-modify-write cycles.
-
-    Uses fcntl on Unix and msvcrt byte-range locks on Windows so the MCP
-    server and notes bridge queue writes to the same annotations file.
-    """
-    lock_path = _annotations_path(manifest).with_suffix(".lock")
+def _exclusive_file_lock(lock_path: Path):
+    """Acquire a cross-platform exclusive byte-range/file lock."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.touch(exist_ok=True)
     try:
         import fcntl
@@ -594,6 +628,13 @@ def _annotations_lock(manifest: Path):
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             fd.close()
+
+
+@contextmanager
+def _annotations_lock(manifest: Path):
+    """Queue annotation read-modify-write cycles across local processes."""
+    with _exclusive_file_lock(_annotations_path(manifest).with_suffix(".lock")):
+        yield
 
 
 def _read_annotations(manifest: Path) -> dict[str, Any]:
@@ -740,12 +781,13 @@ def _viewing_guide(manifest: dict[str, Any], sheet: dict[str, Any]) -> str:
         columns = options.get("keyframes_per_row", "?")
         max_frames = options.get("max_keyframes", "?")
         layout = f"{columns} columns / up to {max_frames} keyframes"
-    subtitle_guidance = (
-        "The sidecar was OCR-read from burned-in image text. Treat its confidence labels as uncertainty signals and resolve doubtful wording against the visible frame."
-        if manifest.get("subtitle_source") == "burned-subtitle-ocr"
-        else "Short subtitles under keyframes are only semantic anchors. Read the sidecar subtitles below for dialogue and precise text."
-    )
-    return "\n".join([
+    if manifest.get("subtitle_source") == "burned-subtitle-ocr":
+        subtitle_guidance = "The subtitle track was OCR-read from burned-in image text. Treat its OCR provenance and any confidence labels as uncertainty signals, and resolve doubtful wording against the visible frame."
+    elif manifest.get("subtitle_source"):
+        subtitle_guidance = "Short subtitles under keyframes are only semantic anchors. Read the source-subtitle section below for dialogue and precise text."
+    else:
+        subtitle_guidance = "No source-subtitle track is available for this span; do not infer exact dialogue from a visual anchor alone."
+    guidance = [
         "[viewing-guide]",
         "You are watching a span of film time compressed into a film-matinee sheet, not merely scanning an infographic.",
         "Watch linearly from left to right, top to bottom. Treat each keyframe as a visual anchor in the film's time flow.",
@@ -753,10 +795,17 @@ def _viewing_guide(manifest: dict[str, Any], sheet: dict[str, Any]) -> str:
         "Color bands between keyframes represent elapsed visual time, color, and rhythm; longer bands mean more time passed, not necessarily greater importance.",
         "The thin blue audio rail is normalized within this chunk; compare loud/quiet moments inside this chunk, not across the whole film.",
         subtitle_guidance,
+    ]
+    if manifest.get("audio_transcript"):
+        guidance.append(
+            "The audio-transcript section is independent ASR evidence, not an authoritative subtitle or speaker label. Compare it with source subtitles or burned-text OCR when they disagree; do not silently merge conflicting words or invent who said them."
+        )
+    guidance.extend([
         f"Layout: {layout}. Empty visual capacity is meaningful: this chunk did not need every slot.",
         "If you have a worthwhile thought, uncertainty, motif, or user-facing observation, you may think aloud or call film_note; otherwise keep watching without forcing notes.",
         "[/viewing-guide]",
     ])
+    return "\n".join(guidance)
 
 
 def _notes_for_chunk(manifest_path: Path, chunk_index: int) -> list[dict[str, Any]]:
@@ -874,6 +923,11 @@ def film_generate_command(
     ocr_fps: float = 2.0,
     ocr_crop_ratio: float = 0.34,
     ocr_width: int = 960,
+    audio_transcript: str = "auto",
+    asr_model: str = "medium",
+    asr_language: str = "",
+    asr_device: str = "cpu",
+    asr_context_sec: float = 1.5,
 ) -> str:
     """Return the generator command for a local film without running it."""
     cmd, out, manifest, log = _build_generate_command(
@@ -898,6 +952,11 @@ def film_generate_command(
         ocr_fps,
         ocr_crop_ratio,
         ocr_width,
+        audio_transcript,
+        asr_model,
+        asr_language,
+        asr_device,
+        asr_context_sec,
     )
     return "\n".join([
         f"out_dir: {out}",
@@ -931,6 +990,11 @@ def film_generate(
     ocr_fps: float = 2.0,
     ocr_crop_ratio: float = 0.34,
     ocr_width: int = 960,
+    audio_transcript: str = "auto",
+    asr_model: str = "medium",
+    asr_language: str = "",
+    asr_device: str = "cpu",
+    asr_context_sec: float = 1.5,
     background: bool = True,
 ) -> str:
     """Generate film-matinee sheets from local video/subtitles.
@@ -962,6 +1026,11 @@ def film_generate(
         ocr_fps,
         ocr_crop_ratio,
         ocr_width,
+        audio_transcript,
+        asr_model,
+        asr_language,
+        asr_device,
+        asr_context_sec,
     )
     if background:
         return _start_background_job(cmd, out, manifest, log, phase="generating")
@@ -1010,6 +1079,11 @@ def film_open_command(
     ocr_fps: float = 2.0,
     ocr_crop_ratio: float = 0.34,
     ocr_width: int = 960,
+    audio_transcript: str = "auto",
+    asr_model: str = "medium",
+    asr_language: str = "",
+    asr_device: str = "cpu",
+    asr_context_sec: float = 1.5,
 ) -> str:
     """Return the URL/local-source preparation and generation command without running it."""
     cmd, out, manifest, log = _build_open_command(
@@ -1019,6 +1093,7 @@ def film_open_command(
         subtitle_style_include, subtitle_style_exclude, max_sheet_sec,
         sample_step_sec, allow_small_video, ffmpeg_hwaccel, ffmpeg_hwaccel_device,
         burned_subtitles, ocr_fps, ocr_crop_ratio, ocr_width,
+        audio_transcript, asr_model, asr_language, asr_device, asr_context_sec,
     )
     return "\n".join([
         f"out_dir: {out}",
@@ -1057,6 +1132,11 @@ def film_open(
     ocr_fps: float = 2.0,
     ocr_crop_ratio: float = 0.34,
     ocr_width: int = 960,
+    audio_transcript: str = "auto",
+    asr_model: str = "medium",
+    asr_language: str = "",
+    asr_device: str = "cpu",
+    asr_context_sec: float = 1.5,
     background: bool = True,
 ) -> str:
     """Prepare a URL or local film, discover subtitles, and generate sheets.
@@ -1076,6 +1156,7 @@ def film_open(
         subtitle_style_include, subtitle_style_exclude, max_sheet_sec,
         sample_step_sec, allow_small_video, ffmpeg_hwaccel, ffmpeg_hwaccel_device,
         burned_subtitles, ocr_fps, ocr_crop_ratio, ocr_width,
+        audio_transcript, asr_model, asr_language, asr_device, asr_context_sec,
     )
     if background:
         return _start_background_job(
@@ -1130,6 +1211,183 @@ def film_refine_chunk(
     if result.returncode != 0:
         raise RuntimeError(f"chunk refinement failed with code {result.returncode}; see {log}")
     return f"refined chunk {int(chunk_index):03d}\nmanifest: {manifest}\nlog: {log}"
+
+
+_FOCUS_PROFILES = {
+    "balanced": {
+        "layout": "4x4",
+        "target_keyframes": 16,
+        "sample_step_sec": 0.75,
+        "min_segment_sec": 2.0,
+        "max_segment_sec": 12.0,
+        "micro_event_sensitivity": 1.45,
+        "min_micro_keyframe_gap_sec": 1.5,
+        "max_micro_event_keyframes_per_sheet": 8,
+        "max_keyframe_gap_sec": 20.0,
+        "action_gap_sec": 12.0,
+    },
+    "dense": {
+        "layout": "5x4",
+        "target_keyframes": 20,
+        "sample_step_sec": 0.5,
+        "min_segment_sec": 1.5,
+        "max_segment_sec": 8.0,
+        "micro_event_sensitivity": 1.3,
+        "min_micro_keyframe_gap_sec": 1.0,
+        "max_micro_event_keyframes_per_sheet": 10,
+        "max_keyframe_gap_sec": 12.0,
+        "action_gap_sec": 8.0,
+    },
+}
+
+
+def _build_focus_command(
+    manifest_path: str,
+    start_time: str,
+    end_time: str,
+    detail: str = "dense",
+) -> tuple[list[str], Path, Path, dict[str, Any], float, float]:
+    parent_path, parent = _load_manifest(manifest_path)
+    detail = str(detail or "dense").strip().lower()
+    if detail not in _FOCUS_PROFILES:
+        raise ValueError("detail must be balanced or dense")
+    start = _parse_timecode(start_time)
+    end = _parse_timecode(end_time)
+    if start is None or end is None:
+        raise ValueError("start_time and end_time must be SS, MM:SS, or HH:MM:SS")
+    if start < 0 or end <= start:
+        raise ValueError("focus range must have a non-negative start and end after start")
+    if end - start > 300:
+        raise ValueError("focus range is limited to 5 minutes; split a longer span into adjacent ranges")
+    try:
+        film_duration = float((parent.get("probe") or {}).get("format", {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        film_duration = 0.0
+    if film_duration > 0 and end > film_duration + 0.5:
+        raise ValueError(f"focus end {_fmt_time(end)} is past the film duration {_fmt_time(film_duration)}")
+
+    video = Path(str(parent.get("video") or "")).expanduser().resolve()
+    if not video.exists():
+        raise FileNotFoundError(
+            f"source video not found: {video}; reopen the URL or restore the local source before focusing"
+        )
+    subtitle_value = parent.get("subtitle")
+    subtitle = Path(str(subtitle_value)).expanduser().resolve() if subtitle_value else None
+    if subtitle is not None and not subtitle.exists():
+        raise FileNotFoundError(f"subtitle not found: {subtitle}")
+    asr_value = parent.get("audio_transcript")
+    asr_track = Path(str(asr_value)).expanduser().resolve() if asr_value else None
+    if asr_track is not None and not asr_track.exists():
+        raise FileNotFoundError(f"audio transcript not found: {asr_track}")
+
+    profile = _FOCUS_PROFILES[detail]
+    generation = str(parent.get("generation_id") or "legacy")[:10]
+    focus_name = f"v1-{generation}-{round(start * 1000):010d}-{round(end * 1000):010d}-{detail}"
+    out = parent_path.parent / "focus" / focus_name
+    options = dict(parent.get("options") or {})
+    command = [
+        sys.executable,
+        str(_generator_script()),
+        "--video", str(video),
+        "--out-dir", str(out),
+        "--title", f"{parent.get('title') or video.stem} - focus",
+        "--from", str(start),
+        "--to", str(end),
+        "--min-sheet-sec", str(end - start),
+        "--max-sheet-sec", str(end - start),
+        "--max-sheets", "1",
+        "--layout", str(profile["layout"]),
+        "--target-keyframes", str(profile["target_keyframes"]),
+        "--sample-step-sec", str(profile["sample_step_sec"]),
+        "--min-segment-sec", str(profile["min_segment_sec"]),
+        "--max-segment-sec", str(profile["max_segment_sec"]),
+        "--micro-event-sensitivity", str(profile["micro_event_sensitivity"]),
+        "--min-micro-keyframe-gap-sec", str(profile["min_micro_keyframe_gap_sec"]),
+        "--max-micro-event-keyframes-per-sheet", str(profile["max_micro_event_keyframes_per_sheet"]),
+        "--max-keyframe-gap-sec", str(profile["max_keyframe_gap_sec"]),
+        "--action-gap-sec", str(profile["action_gap_sec"]),
+        "--burned-subtitles", "off" if subtitle else str(options.get("burned_subtitles") or "auto"),
+        "--ocr-fps", str(options.get("ocr_fps") or 2.0),
+        "--ocr-crop-ratio", str(options.get("ocr_crop_ratio") or 0.34),
+        "--ocr-width", str(options.get("ocr_width") or 960),
+        "--asr-model", str(options.get("asr_model") or "medium"),
+        "--asr-language", str(options.get("asr_language") or ""),
+        "--asr-device", str(options.get("asr_device") or "cpu"),
+        "--asr-context-sec", str(options.get("asr_context_sec") or 1.5),
+    ]
+    if subtitle:
+        command.extend(["--subtitle", str(subtitle)])
+    if asr_track:
+        asr_info = dict(parent.get("audio_transcript_info") or {})
+        command.extend([
+            "--audio-transcript", "off",
+            "--audio-transcript-file", str(asr_track),
+            "--asr-track-backend", str(asr_info.get("backend") or "existing"),
+        ])
+    else:
+        command.extend(["--audio-transcript", str(options.get("audio_transcript") or "auto")])
+    hwaccel = str(options.get("ffmpeg_hwaccel") or "none")
+    if hwaccel.lower() not in {"none", "off", "false", "0"}:
+        command.extend(["--ffmpeg-hwaccel", hwaccel])
+    if options.get("ffmpeg_hwaccel_device"):
+        command.extend(["--ffmpeg-hwaccel-device", str(options["ffmpeg_hwaccel_device"])])
+    return command, out, parent_path, parent, start, end
+
+
+@mcp.tool(structured_output=False)
+def film_focus_range(
+    manifest_path: str,
+    start_time: str,
+    end_time: str,
+    detail: str = "dense",
+    refresh: bool = False,
+) -> list[Any]:
+    """Read a short film range as a denser temporary sheet without moving the linear cursor.
+
+    Use this after a specific action, montage, visual transition, or ambiguous
+    moment deserves closer inspection. It does not replace canonical chunks or
+    notes. Detail is balanced (4x4) or dense (5x4); ranges are capped at 5 min.
+    """
+    command, out, parent_path, parent, start, end = _build_focus_command(
+        manifest_path, start_time, end_time, detail,
+    )
+    focus_manifest = out / "manifest.json"
+    out.mkdir(parents=True, exist_ok=True)
+    with _exclusive_file_lock(out / ".focus-generation.lock"):
+        if refresh or not focus_manifest.exists():
+            result = subprocess.run(command, capture_output=True, text=True, cwd=str(Path.cwd()))
+            log = out / "film-matinee-focus.log"
+            log.write_text((result.stdout or "") + (result.stderr or ""), "utf-8")
+            log.chmod(0o600)
+            if result.returncode != 0:
+                raise RuntimeError(f"focus generation failed with code {result.returncode}; see {log}")
+    focus_path, focus = _load_manifest(str(focus_manifest))
+    sheets = focus.get("sheets") or []
+    if not sheets:
+        raise RuntimeError(f"focus manifest has no sheet: {focus_path}")
+    sheet = sheets[0]
+    canonical = _sheet_for_time(parent, (start + end) / 2)
+    canonical_index = int(canonical.get("index", 0)) if canonical else None
+    sidecar = _sidecar_text(focus_path.parent, sheet)
+    text = "\n".join([
+        "[film-matinee-focus]",
+        f"title: {parent.get('title', 'Film')}",
+        f"parent_manifest: {parent_path}",
+        f"focus_manifest: {focus_path}",
+        f"time: {_fmt_time(start)}-{_fmt_time(end)}",
+        f"detail: {detail}",
+        f"canonical_chunk: {canonical_index if canonical_index is not None else 'none'}",
+        "linear_cursor_changed: false",
+        "This is a detail lens over the existing linear viewing timeline, not a replacement chunk.",
+        "",
+        _viewing_guide(focus, sheet),
+        "",
+        sidecar,
+        "[/film-matinee-focus]",
+    ])
+    image = _sheet_image(focus_path.parent, sheet)
+    _touch_cache_safely(parent_path.parent)
+    return [text, image] if image is not None else [text]
 
 
 @mcp.tool()
@@ -1226,12 +1484,14 @@ def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
     sheets = []
     title = ""
     subtitle_source = ""
+    audio_transcript_info: dict[str, Any] = {}
     if manifest.exists():
         try:
             data = json.loads(manifest.read_text("utf-8"))
             title = data.get("title", "")
             sheets = data.get("sheets", [])
             subtitle_source = str(data.get("subtitle_source") or "")
+            audio_transcript_info = dict(data.get("audio_transcript_info") or {})
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -1251,6 +1511,12 @@ def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
         f"sheets: {len(sheets)}",
         f"available_sheets: {len(sheets)}",
         f"subtitle_source: {subtitle_source}" if subtitle_source else "",
+        (
+            f"audio_transcript: {audio_transcript_info.get('backend') or 'none'} "
+            f"model={audio_transcript_info.get('model') or 'unknown'} "
+            f"cues={audio_transcript_info.get('cue_count', 0)}"
+            if audio_transcript_info else ""
+        ),
     ]
     if job.get("video_path"):
         lines.append(f"video_path: {job['video_path']}")
@@ -1282,6 +1548,12 @@ def film_overview(manifest_path: str) -> str:
         f"subtitle_kind: {source_info.get('subtitle_kind')}" if source_info.get("subtitle_kind") else "",
         f"subtitle_language: {source_info.get('subtitle_language')}" if source_info.get("subtitle_language") else "",
         f"subtitle_source: {manifest.get('subtitle_source')}" if manifest.get("subtitle_source") else "",
+        (
+            f"audio_transcript: {(manifest.get('audio_transcript_info') or {}).get('backend') or 'none'} "
+            f"model={(manifest.get('audio_transcript_info') or {}).get('model') or 'unknown'} "
+            f"cues={(manifest.get('audio_transcript_info') or {}).get('cue_count', 0)}"
+            if manifest.get("audio_transcript_info") else ""
+        ),
         f"chunks: {len(manifest.get('sheets', []))}",
         f"cursor: {_cursor(path, manifest)}",
     ]
@@ -1292,6 +1564,7 @@ def film_overview(manifest_path: str) -> str:
             f"{_fmt_time(float(start))}-{_fmt_time(float(end))} "
             f"k={len(sheet.get('keyframes', []))} "
             f"subs={sheet.get('subtitle_count', 0)}"
+            f" asr={sheet.get('audio_transcript_count', 0)}"
         )
     return "\n".join(line for line in lines if line)
 

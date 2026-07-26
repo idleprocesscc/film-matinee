@@ -538,6 +538,11 @@ def build_generator_command(options: argparse.Namespace, prepared: PreparedSourc
         "--ocr-fps", str(options.ocr_fps),
         "--ocr-crop-ratio", str(options.ocr_crop_ratio),
         "--ocr-width", str(options.ocr_width),
+        "--audio-transcript", options.audio_transcript,
+        "--asr-model", options.asr_model,
+        "--asr-language", options.asr_language,
+        "--asr-device", options.asr_device,
+        "--asr-context-sec", str(options.asr_context_sec),
     ]
     if prepared.subtitle_path:
         command.extend(["--subtitle", str(prepared.subtitle_path)])
@@ -599,6 +604,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-fps", type=float, default=2.0)
     parser.add_argument("--ocr-crop-ratio", type=float, default=0.34)
     parser.add_argument("--ocr-width", type=int, default=960)
+    parser.add_argument("--audio-transcript", choices=("off", "auto", "local", "groq", "openai"), default="auto")
+    parser.add_argument("--asr-model", default="medium")
+    parser.add_argument("--asr-language", default="")
+    parser.add_argument("--asr-device", default="cpu")
+    parser.add_argument("--asr-context-sec", type=float, default=1.5)
     parser.add_argument("--allow-small-video", action="store_true")
     parser.add_argument("--ffmpeg-hwaccel", default="none")
     parser.add_argument("--ffmpeg-hwaccel-device", default="")

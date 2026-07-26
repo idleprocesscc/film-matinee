@@ -21,6 +21,8 @@ film_open(
 
 如果站点把字幕烧进画面而没有独立轨，macOS 默认会跨全片抽样探测；确认存在后，再按 chunk 用 Apple Vision 识别。sidecar 会明确写 `source=burned-subtitle-ocr` 和每段置信度，不把 OCR 冒充原始字幕。可传 `burned_subtitles="off"` 关闭，或用 `ocr_fps=3` 提高短台词覆盖（也会近似线性增加耗时）。已有 ASS/SRT/VTT/内封文本轨时始终优先使用原字幕。
 
+同样在没有可靠原字幕时，`audio_transcript="auto"` 会使用本机已经缓存的 Whisper `medium` 模型生成独立 ASR 轨；不会自动下载模型或调用付费 API。OCR 与 ASR 会在 sidecar 里分成两个区块，冲突时交给 AI 结合画面判断。显式用 `audio_transcript="local"` 才允许下载缺失模型；`groq` / `openai` 必须显式选择并配置对应 key。
+
 拿返回的 `out_dir` 看进度：
 
 ```text
@@ -84,6 +86,7 @@ python3 tools/generate_film_matinee_sheets.py \
 - `film_chunk(manifest_path, index)`：直接读某节。
 - `film_locate(manifest_path, timecode="", text="")`：兜底检索。
 - `film_refine_chunk(manifest_path, chunk_index, pin_times="01:30:39")`：已知某个短事件遗漏时重做单节，指定时刻优先保留；后续 chunks、游标和批注不变。
+- `film_focus_range(manifest_path, start_time="46:30", end_time="47:45", detail="dense")`：临时生成 `5x4` 局部精读 sheet，不替换原 chunk，也不移动正常观影游标。
 - `film_cache_status()`：查看 URL 源视频大小、最近活动和过期时间。
 - `film_cache_cleanup(dry_run=true)`：预演当前过期清理；设 `dry_run=false` 才执行。
 - `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
@@ -101,6 +104,19 @@ python3 tools/generate_film_matinee_sheets.py \
 - 有值得保留的观察时可以碎碎念或用 `film_note` 写入批注；没有也可以安静看完继续下一段。
 
 连续调用 `film_next` 时会省略这段完整 tips，避免正常观影流里反复打断。
+
+当某个蒙太奇、动作或视觉转折需要看细一点时，直接调用：
+
+```text
+film_focus_range(
+  manifest_path="/path/to/manifest.json",
+  start_time="46:30",
+  end_time="47:45",
+  detail="dense"
+)
+```
+
+结果会直接返回一张高密 sheet 和同范围文字轨；缓存写入主输出目录的 `focus/`，但 canonical chunks、`film_next` 游标和批注结构不变。
 
 ### 让 Claude 从手动准备的本地资源导入
 

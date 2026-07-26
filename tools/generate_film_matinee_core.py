@@ -33,6 +33,23 @@ from typing import Iterable
 from PIL import Image, ImageDraw, ImageFont
 
 try:
+    from film_matinee_asr import (
+        ASRSegment,
+        ASRUnavailable,
+        resolve_asr_backend,
+        transcribe_video_range,
+        write_srt as write_asr_srt,
+    )
+except ImportError:  # Imported as tools.generate_film_matinee_core in tests.
+    from .film_matinee_asr import (
+        ASRSegment,
+        ASRUnavailable,
+        resolve_asr_backend,
+        transcribe_video_range,
+        write_srt as write_asr_srt,
+    )
+
+try:
     from film_matinee_ocr import (
         OCRCue,
         OCRUnavailable,
@@ -132,7 +149,8 @@ def clean_subtitle_text(text: str) -> str:
 
 def cue_id(cue: Cue, index: int) -> str:
     tenths = max(0, round(cue.start * 10))
-    return f"S{index + 1:02d}_{tenths}"
+    prefix = "A" if cue.source == "audio-asr" else "S"
+    return f"{prefix}{index + 1:02d}_{tenths}"
 
 
 def short_cue_label(identifier: str) -> str:
@@ -345,7 +363,12 @@ def pick_subtitle_anchor(time: float, cues: list[Cue], options: argparse.Namespa
     text = truncate_opening(cue.text, options.anchor_max_chars, options.anchor_max_words)
     if not text:
         return None
-    return {"id": cue.id, "text": text, "distance": round(distance, 2)}
+    return {
+        "id": cue.id,
+        "text": text,
+        "distance": round(distance, 2),
+        "source": cue.source,
+    }
 
 
 def run_json(command: list[str]) -> dict:
@@ -1765,17 +1788,45 @@ def render_sheet(
     return canvas
 
 
-def make_sidecar(cues: list[Cue], start: float, end: float) -> str:
-    source = "burned-subtitle-ocr" if cues and all(cue.source == "burned-subtitle-ocr" for cue in cues) else "source-subtitle"
-    lines = []
+def make_sidecar(
+    cues: list[Cue],
+    asr_cues: list[Cue],
+    start: float,
+    end: float,
+    asr_status: dict | None = None,
+) -> str:
+    if cues and all(cue.source == "burned-subtitle-ocr" for cue in cues):
+        source = "burned-subtitle-ocr"
+    elif cues:
+        source = "source-subtitle"
+    else:
+        source = "none"
+    subtitle_lines = []
     for cue in cues:
-        confidence = f" [OCR {cue.confidence:.2f}]" if cue.confidence is not None else ""
-        lines.append(f"{cue.id} {fmt_time(cue.start)}-{fmt_time(cue.end)}{confidence}: {cue.text}")
-    return "\n".join([
+        if cue.source == "burned-subtitle-ocr":
+            confidence = f" [OCR {cue.confidence:.2f}]" if cue.confidence is not None else " [OCR]"
+        else:
+            confidence = ""
+        subtitle_lines.append(f"{cue.id} {fmt_time(cue.start)}-{fmt_time(cue.end)}{confidence}: {cue.text}")
+    sections = [
         f"[subtitles {fmt_time(start)}-{fmt_time(end)} source={source}]",
-        *lines,
+        *subtitle_lines,
         "[/subtitles]",
-    ])
+    ]
+    if asr_cues:
+        status = asr_status or {}
+        backend = status.get("backend") or "unknown"
+        model = status.get("model") or "unknown"
+        sections.extend([
+            "",
+            f"[audio-transcript {fmt_time(start)}-{fmt_time(end)} source=audio-asr backend={backend} model={model}]",
+            *[
+                f"{cue.id} {fmt_time(cue.start)}-{fmt_time(cue.end)}: {cue.text}"
+                for cue in asr_cues
+            ],
+            "[/audio-transcript]",
+        ])
+    return "\n".join(sections)
 
 
 def reindex_cues(cues: list[Cue]) -> None:
@@ -1814,6 +1865,84 @@ def append_ocr_cues(
     ]
     all_cues.extend(appended)
     reindex_cues(all_cues)
+    return appended
+
+
+def append_asr_cues(
+    all_asr_cues: list[Cue],
+    video: Path,
+    start: float,
+    end: float,
+    options: argparse.Namespace,
+) -> list[Cue]:
+    status = getattr(options, "_asr_status", {})
+    backend = str(status.get("backend") or "")
+    model = str(status.get("model") or options.asr_model)
+    print(
+        f"[film-matinee] ASR audio {fmt_time(start)}-{fmt_time(end)} backend={backend} model={model}",
+        flush=True,
+    )
+    context = max(0.0, float(options.asr_context_sec))
+    generation_start = float(getattr(options, "_generation_start", start))
+    generation_end = float(getattr(options, "_generation_end", end))
+    transcription_start = max(0.0, start - context)
+    transcription_end = min(generation_end, end + context)
+    try:
+        segments = transcribe_video_range(
+            video,
+            transcription_start,
+            transcription_end,
+            backend=backend,
+            model=options.asr_model,
+            language=options.asr_language,
+            device=options.asr_device,
+            download_allowed=bool(status.get("download_allowed")),
+        )
+    except (ASRUnavailable, RuntimeError) as exc:
+        status["error"] = str(exc)
+        status["active"] = False
+        options._asr_active = False
+        if options.audio_transcript != "auto":
+            raise
+        print(f"[film-matinee] automatic ASR disabled after error: {exc}", file=sys.stderr)
+        return []
+    kept_segments = []
+    existing = {
+        (re.sub(r"\W+", "", cue.text.casefold()), round(cue.start, 1), round(cue.end, 1))
+        for cue in all_asr_cues
+    }
+    for segment in segments:
+        midpoint = (segment.start + segment.end) / 2
+        if segment.end < start or segment.start > end:
+            continue
+        if start > generation_start + 0.001 and midpoint < start:
+            continue
+        if end < generation_end - 0.001 and midpoint >= end:
+            continue
+        key = (
+            re.sub(r"\W+", "", segment.text.casefold()),
+            round(segment.start, 1),
+            round(segment.end, 1),
+        )
+        if key in existing:
+            continue
+        existing.add(key)
+        kept_segments.append(segment)
+    appended = [
+        Cue(
+            "",
+            segment.start,
+            segment.end,
+            segment.text,
+            style=f"{backend}:{model}",
+            source="audio-asr",
+        )
+        for segment in kept_segments
+    ]
+    all_asr_cues.extend(appended)
+    reindex_cues(all_asr_cues)
+    status["chunks_processed"] = int(status.get("chunks_processed") or 0) + 1
+    status["cue_count"] = len(all_asr_cues)
     return appended
 
 
@@ -1856,6 +1985,7 @@ def build_keyframes(video: Path, selections: list[Selection], cues: list[Cue], o
 def process_sheet(
     video: Path,
     all_cues: list[Cue],
+    all_asr_cues: list[Cue],
     title: str,
     start: float,
     max_end: float,
@@ -1865,6 +1995,8 @@ def process_sheet(
 ) -> dict:
     candidate_end = min(max_end, start + options.max_sheet_sec)
     candidate_cues = cues_in_range(all_cues, start, candidate_end)
+    candidate_asr_cues = cues_in_range(all_asr_cues, start, candidate_end)
+    candidate_semantic_cues = [*candidate_cues, *candidate_asr_cues]
     samples = sample_visual_frames(video, start, candidate_end, options)
     candidate_audio_levels = sample_audio_levels(video, start, candidate_end, options)
     annotate_audio_events(samples, candidate_audio_levels, options)
@@ -1874,34 +2006,41 @@ def process_sheet(
         math.ceil((candidate_end - start) / max(1, options.max_segment_sec)) + options.target_keyframes,
     )
     analysis_options = argparse.Namespace(**{**vars(options), "max_keyframes": analysis_max})
-    candidate_selections = pick_keyframe_selections(samples, start, candidate_end, candidate_cues, analysis_options)
+    candidate_selections = pick_keyframe_selections(samples, start, candidate_end, candidate_semantic_cues, analysis_options)
     end = choose_adaptive_end(start, candidate_end, candidate_selections, options)
     if getattr(options, "_ocr_active", False):
         append_ocr_cues(all_cues, video, start, end, options)
+    if getattr(options, "_asr_active", False):
+        append_asr_cues(all_asr_cues, video, start, end, options)
     cues = cues_in_range(all_cues, start, end)
+    asr_cues = cues_in_range(all_asr_cues, start, end)
+    semantic_cues = [*cues, *asr_cues]
     final_samples = samples_in_range(samples, start, end)
     audio_levels = [
         item for item in candidate_audio_levels
         if item["t"] >= start - 0.001 and item["t"] <= end + 0.001
     ]
     annotate_audio_events(final_samples, audio_levels, options)
-    selections = pick_keyframe_selections(final_samples, start, end, cues, options)
+    selections = pick_keyframe_selections(final_samples, start, end, semantic_cues, options)
     render_audio_levels = audio_levels if not options.dry_run else []
 
     sheet_path = out_dir / "sheets" / f"sheet-{index:03d}.png"
     sidecar_path = out_dir / "sidecars" / f"sheet-{index:03d}.txt"
     keyframes = []
     if not options.dry_run:
-        keyframes = build_keyframes(video, selections, cues, options)
-        image = render_sheet(title, start, end, final_samples, render_audio_levels, keyframes, cues, options)
+        keyframes = build_keyframes(video, selections, semantic_cues, options)
+        image = render_sheet(title, start, end, final_samples, render_audio_levels, keyframes, semantic_cues, options)
         sheet_path.parent.mkdir(parents=True, exist_ok=True)
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         image.save(sheet_path)
-        sidecar_path.write_text(make_sidecar(cues, start, end), "utf-8")
+        sidecar_path.write_text(
+            make_sidecar(cues, asr_cues, start, end, getattr(options, "_asr_status", {})),
+            "utf-8",
+        )
 
     keyframe_payload = []
     for frame_index, selection in enumerate(selections):
-        anchor = pick_subtitle_anchor(selection.time, cues, options)
+        anchor = pick_subtitle_anchor(selection.time, semantic_cues, options)
         keyframe_payload.append({
             "id": f"K{frame_index + 1}",
             **selection_to_dict(selection),
@@ -1917,6 +2056,7 @@ def process_sheet(
         "sample_count": len(final_samples),
         "audio_sample_count": len(audio_levels),
         "subtitle_count": len(cues),
+        "audio_transcript_count": len(asr_cues),
         "keyframes": keyframe_payload,
         "sheet": sheet_path.relative_to(out_dir).as_posix() if not options.dry_run else None,
         "sidecar": sidecar_path.relative_to(out_dir).as_posix() if not options.dry_run else None,
@@ -1934,7 +2074,8 @@ def build_manifest(video: Path, subtitle: Path | None, probe: dict, title: str, 
         "options": {
             key: value
             for key, value in vars(options).items()
-            if key not in {"video", "subtitle", "out_dir"} and not key.startswith("_")
+            if key not in {"video", "subtitle", "audio_transcript_file", "out_dir"}
+            and not key.startswith("_")
         },
         "sheets": [],
     }
@@ -2008,6 +2149,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-fps", type=float, default=2.0, help="Burned-subtitle OCR samples per second.")
     parser.add_argument("--ocr-crop-ratio", type=float, default=0.34, help="Bottom fraction of the frame searched for subtitles.")
     parser.add_argument("--ocr-width", type=int, default=960, help="Width of cropped OCR frames.")
+    parser.add_argument(
+        "--audio-transcript",
+        choices=("off", "auto", "local", "groq", "openai"),
+        default="auto",
+        help="Independent audio ASR track. Auto uses only an already-cached local Whisper model.",
+    )
+    parser.add_argument("--audio-transcript-file", type=Path, help="Existing timestamped ASR SRT to preserve as a separate evidence track.")
+    parser.add_argument("--asr-model", default="medium", help="Local Whisper model name. Auto never downloads it.")
+    parser.add_argument("--asr-language", default="", help="Optional spoken-language code; empty lets Whisper detect it.")
+    parser.add_argument("--asr-device", default="cpu", help="Local Whisper device, e.g. cpu or cuda.")
+    parser.add_argument("--asr-context-sec", type=float, default=1.5, help="Audio context added around chunk boundaries before midpoint de-duplication.")
+    parser.add_argument("--asr-track-backend", default="existing", help=argparse.SUPPRESS)
 
     parser.add_argument("--sample-step-sec", type=float, default=1.0)
     parser.add_argument("--sample-width", type=int, default=64)
@@ -2083,6 +2236,11 @@ def main() -> int:
     options.layout = f"{layout_columns}x{layout_rows}"
     video = options.video.expanduser().resolve()
     subtitle = options.subtitle.expanduser().resolve() if options.subtitle else None
+    audio_transcript_file = (
+        options.audio_transcript_file.expanduser().resolve()
+        if options.audio_transcript_file
+        else None
+    )
     out_dir = options.out_dir.expanduser().resolve()
     options.out_dir = out_dir
 
@@ -2093,6 +2251,8 @@ def main() -> int:
     end = min(duration, options.end if options.end is not None else duration)
     if start >= end:
         raise RuntimeError(f"empty requested range: {start}..{end}")
+    options._generation_start = start
+    options._generation_end = end
 
     out_dir.mkdir(parents=True, exist_ok=True)
     if options.ocr_fps <= 0:
@@ -2103,6 +2263,12 @@ def main() -> int:
         raise RuntimeError("--ocr-width must be at least 320")
     cues = parse_subtitles(subtitle, options.subtitle_style_include, options.subtitle_style_exclude)
     cues = shift_cues(cues, options.subtitle_offset_sec)
+    if audio_transcript_file is not None and not audio_transcript_file.exists():
+        raise RuntimeError(f"audio transcript does not exist: {audio_transcript_file}")
+    asr_cues = parse_subtitles(audio_transcript_file, "", "")
+    for cue in asr_cues:
+        cue.source = "audio-asr"
+    reindex_cues(asr_cues)
     subtitle_is_ocr = bool(subtitle and subtitle.name.endswith(".ocr.srt"))
     if subtitle_is_ocr:
         for cue in cues:
@@ -2148,6 +2314,57 @@ def main() -> int:
         else ("source-subtitle" if subtitle else None)
     )
     manifest["burned_subtitle_ocr"] = ocr_status
+    source_subtitle_present = bool(subtitle and not subtitle_is_ocr)
+    options._asr_active = False
+    if audio_transcript_file:
+        asr_status = {
+            "mode": "file",
+            "active": False,
+            "track_available": True,
+            "backend": options.asr_track_backend,
+            "model": options.asr_model,
+            "cue_count": len(asr_cues),
+        }
+    elif options.audio_transcript == "auto" and source_subtitle_present:
+        asr_status = {
+            "mode": "auto",
+            "active": False,
+            "reason": "source-subtitle-present",
+        }
+    else:
+        try:
+            asr_status = resolve_asr_backend(options.audio_transcript, options.asr_model)
+            options._asr_active = bool(asr_status.get("active"))
+        except ASRUnavailable as exc:
+            if options.audio_transcript != "auto":
+                raise
+            asr_status = {
+                "mode": "auto",
+                "active": False,
+                "error": str(exc),
+            }
+    options._asr_status = asr_status
+    asr_output = (
+        out_dir / "source" / "audio-transcript.asr.srt"
+        if options._asr_active
+        else audio_transcript_file
+    )
+    manifest["audio_transcript"] = str(asr_output) if asr_output else None
+    manifest["audio_transcript_info"] = asr_status
+    manifest["text_tracks"] = [
+        *([{
+            "kind": "subtitle",
+            "source": manifest["subtitle_source"],
+            "path": manifest["subtitle"],
+        }] if manifest.get("subtitle") else []),
+        *([{
+            "kind": "audio-transcript",
+            "source": "audio-asr",
+            "path": str(asr_output),
+            "backend": asr_status.get("backend"),
+            "model": asr_status.get("model"),
+        }] if asr_output else []),
+    ]
     manifest_path = out_dir / "manifest.json"
     replacing = bool(options.replace_existing_sheet)
     if replacing and not manifest_path.exists():
@@ -2179,6 +2396,10 @@ def main() -> int:
     print(f"[film-matinee] video={video}")
     print(f"[film-matinee] duration={fmt_time(duration)} requested={fmt_time(start)}-{fmt_time(end)}")
     print(f"[film-matinee] subtitles={len(cues)} source={manifest.get('subtitle_source') or 'none'}")
+    print(
+        f"[film-matinee] audio_transcript={len(asr_cues)} "
+        f"backend={asr_status.get('backend') or 'none'} active={bool(options._asr_active)}"
+    )
     print(f"[film-matinee] out={out_dir}")
 
     current = start
@@ -2196,7 +2417,7 @@ def main() -> int:
                 **vars(options),
                 "max_sheet_sec": end - current,
             })
-        item = process_sheet(video, cues, title, current, end, index, out_dir, sheet_options)
+        item = process_sheet(video, cues, asr_cues, title, current, end, index, out_dir, sheet_options)
         if options._ocr_active and ocr_subtitle is not None:
             write_ocr_srt([
                 OCRCue(
@@ -2210,6 +2431,25 @@ def main() -> int:
             ], ocr_subtitle)
             manifest["subtitle"] = str(ocr_subtitle)
             manifest["burned_subtitle_ocr"]["cue_count"] = len(cues)
+        current_asr_status = dict(getattr(options, "_asr_status", asr_status))
+        if asr_output is not None and (asr_cues or current_asr_status.get("chunks_processed")):
+            write_asr_srt([
+                ASRSegment(cue.start, cue.end, cue.text)
+                for cue in asr_cues
+            ], asr_output)
+            manifest["audio_transcript"] = str(asr_output)
+        elif current_asr_status.get("error") and not asr_cues:
+            manifest["audio_transcript"] = None
+            manifest["text_tracks"] = [
+                track for track in manifest.get("text_tracks", [])
+                if track.get("kind") != "audio-transcript"
+            ]
+        manifest["audio_transcript_info"] = current_asr_status
+        if manifest.get("audio_transcript"):
+            manifest["audio_transcript_info"]["cue_count"] = len(asr_cues)
+            for track in manifest.get("text_tracks", []):
+                if track.get("kind") == "audio-transcript":
+                    track["cue_count"] = len(asr_cues)
         if replacing:
             item["refinement"] = {
                 "pin_times": options.pin_times,
@@ -2232,7 +2472,8 @@ def main() -> int:
         current = item["time_range"][1]
         print(
             f"[film-matinee] -> {fmt_time(item['time_range'][0])}-{fmt_time(item['time_range'][1])} "
-            f"{len(item['keyframes'])} keyframes, {item['subtitle_count']} cues, {item['audio_sample_count']} audio bins",
+            f"{len(item['keyframes'])} keyframes, {item['subtitle_count']} subtitle cues, "
+            f"{item['audio_transcript_count']} ASR cues, {item['audio_sample_count']} audio bins",
             flush=True,
         )
         index += 1

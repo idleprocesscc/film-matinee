@@ -16,10 +16,12 @@
 - 用 `film_open` 直接接收 URL 或本地视频：URL 自动下载并缓存，本地 MKV 可自动发现 sidecar 或文本型内嵌字幕。
 - URL 字幕优先选人工轨，再考虑自动字幕；支持按语言顺序选择，生成器原生读取 ASS / SSA / SRT / VTT，并保留 VTT 中已有的说话人标签。
 - 没有独立字幕轨时，macOS 会自动探测烧录字幕并用 Apple Vision 按 chunk 做 OCR；sidecar 明确标注 OCR 来源和置信度。
+- 没有可靠原字幕时，可用本地 Whisper 或显式选择 Groq/OpenAI 生成独立音频 ASR 轨；ASR 与画面 OCR 分栏保留，不自动覆盖或拼成“标准答案”。
 - URL 下载的源视频在连续 24 小时没有观影访问后自动清理；sheet、字幕、进度和批注保留，本地原片永不进入清理范围。
 - 关键帧抽取会综合镜头切换、局部色彩变化、短促 micro event、音频瞬态和长动作段覆盖；暗场有纹理/轮廓时不会被简单当作低信息。
 - 把完整字幕作为 sidecar 文本交给 AI，避免把文字全塞进图片。
 - 用 MCP 工具 `film_start` / `film_next` 让 AI 按顺序读 chunk。
+- 用 `film_focus_range` 临时放大五分钟内的具体片段，生成更密的 `4x4` / `5x4` sheet，同时不改变主观影游标和 canonical chunks。
 - `film_start` / 显式跳转 chunk 时自带观影前小 tips，引导 AI 按电影时间线性观看 sheet；连续 `film_next` 会免去重复提醒。
 - 用 `film_note` / `film_reply` 写入共享 `annotations.json`，前端 viewer 可实时显示。
 - 保留原本轻量本地播放服务：扫文件夹、HTTP Range 视频流、SRT 字幕按区间返回。
@@ -39,6 +41,12 @@ brew install ffmpeg yt-dlp
 ```
 
 烧录字幕 OCR 使用 macOS 自带的 Apple Vision，首次运行会用 `swiftc` 编译一个很小的本地桥接程序，因此还需安装 Xcode Command Line Tools（已有 Xcode 时无需另装）。OCR 不上传画面，也不需要 Tesseract。
+
+音频 ASR 是可选能力。安装本地 Whisper 后，可显式运行一次 `audio_transcript="local"` 让它下载所选模型；此后默认 `auto` 才会复用缓存模型：
+
+```bash
+pip install -U openai-whisper
+```
 
 线性读片工作流见 [examples/FILM_MATINEE.md](examples/FILM_MATINEE.md)。旧式播放器集成见 [examples/INTEGRATION.md](examples/INTEGRATION.md)。
 
@@ -73,6 +81,10 @@ URL 能力以 `yt-dlp` 实际支持和有权访问的来源为限，不绕过 DR
 有些站点把字幕直接烧进视频像素，而不提供独立字幕轨。macOS 默认使用 `burned_subtitles="auto"`：先跨全片抽样，确认画面下方反复出现字幕型文字后，才会按 chunk 以 2 fps 识别并写入 `source/burned-subtitles.ocr.srt`。外挂、下载或内封字幕始终优先，存在时不会重复 OCR。
 
 OCR 结果不是原始字幕轨：它可能有粘词、同形字和极短台词漏识别。sidecar 会写成 `source=burned-subtitle-ocr` 并给每段附上置信度，让 AI 保留判断。可用 `burned_subtitles="off"` 关闭，或用 `"ocr"` 跳过探测并强制识别；`ocr_fps` 越高越不容易漏短台词，但处理时间也近似线性增长。当前自动 OCR 后端仅支持 macOS，其他系统仍可显式提供同步字幕文件。
+
+音频 ASR 是另一条证据轨。默认 `audio_transcript="auto"` 只在没有可靠原字幕、且本机已经缓存 `~/.cache/whisper/medium.pt` 时运行；它不会静默下载模型，也不会因为环境里恰好有 API key 就产生网络费用。显式使用 `"local"` 才允许 Whisper 下载缺失模型；显式使用 `"groq"` / `"openai"` 才会上传每个 chunk 的压缩音频并调用对应 API。可用 `asr_model`、`asr_language`、`asr_device` 调整本地识别。
+
+生成后，`source/audio-transcript.asr.srt` 与原字幕或 `burned-subtitles.ocr.srt` 分开保存。sidecar 中也分别使用 `[subtitles]` 和 `[audio-transcript]`；AI 会被提醒比较两条证据，遇到冲突时保留不确定性，而不是静默合并。ASR 不负责说话人识别，不能仅凭转写擅自补角色名。
 
 ## 生成视觉 Sheet
 
@@ -158,6 +170,7 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 - `film_chunk(manifest_path, index)`：读取指定 chunk。
 - `film_locate(manifest_path, timecode="", text="")`：兜底定位。
 - `film_refine_chunk(manifest_path, chunk_index, pin_times)`：发现遗漏时只重做该节，让指定时刻作为必保候选参与竞争，并保留后续 chunks、游标和批注。
+- `film_focus_range(manifest_path, start_time, end_time, detail="dense")`：精读五分钟内的具体范围；`balanced` 为 `4x4`，`dense` 为 `5x4`，不改变 `film_next` 游标。
 - `film_cache_status()`：列出 URL 源视频大小、闲置时间和预计过期时间。
 - `film_cache_cleanup(dry_run=true)`：预览过期清理；显式设为 `false` 才立即执行。自动定时器直接调用同一安全清理逻辑。
 - `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
@@ -310,7 +323,7 @@ MIT
 
 The local film server portions include code adapted from [Echoes0302/clove-cinema](https://github.com/Echoes0302/clove-cinema), which states MIT licensing in its README. See [NOTICE](NOTICE) for attribution.
 
-The source-ingestion and WebVTT workflow is inspired by and includes adapted ideas from [bradautomates/claude-video](https://github.com/bradautomates/claude-video), Copyright (c) 2026 Bradley Bonanno, under the MIT License. See [NOTICE](NOTICE) for the full attribution.
+The source-ingestion, WebVTT, and Whisper-compatible transcription workflow is inspired by and includes adapted ideas from [bradautomates/claude-video](https://github.com/bradautomates/claude-video), Copyright (c) 2026 Bradley Bonanno, under the MIT License. See [NOTICE](NOTICE) for the full attribution.
 
 ## Contributors
 
