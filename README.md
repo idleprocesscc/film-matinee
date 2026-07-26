@@ -15,6 +15,7 @@
 - 批量生成 `film-matinee sheet`：关键帧 + 色带 + 音频 rail + 极短字幕锚点。
 - 用 `film_open` 直接接收 URL 或本地视频：URL 自动下载并缓存，本地 MKV 可自动发现 sidecar 或文本型内嵌字幕。
 - URL 字幕优先选人工轨，再考虑自动字幕；支持按语言顺序选择，生成器原生读取 ASS / SSA / SRT / VTT，并保留 VTT 中已有的说话人标签。
+- URL 下载的源视频在连续 24 小时没有观影访问后自动清理；sheet、字幕、进度和批注保留，本地原片永不进入清理范围。
 - 关键帧抽取会综合镜头切换、局部色彩变化、短促 micro event、音频瞬态和长动作段覆盖；暗场有纹理/轮廓时不会被简单当作低信息。
 - 把完整字幕作为 sidecar 文本交给 AI，避免把文字全塞进图片。
 - 用 MCP 工具 `film_start` / `film_next` 让 AI 按顺序读 chunk。
@@ -58,9 +59,15 @@ film_generate_status(out_dir)
 
 第一张 sheet 写入 manifest 后即可调用 `film_start`，不必等整部片全部生成；如果 AI 读得比后台快，`film_next` 会明确返回 waiting，而不会重复上一节。缓存中的 `source/source.json` 只保留必要来源信息，不保存 yt-dlp 的完整原始元数据。
 
+URL 下载的大视频以最近一次 `film_overview` / `film_start` / `film_next` / `film_chunk` 为活动时间；闲置满 24 小时后删除 `source/video.*`。视觉 sheets、字幕 sidecars、manifest、游标状态和 `annotations.json` 不会删除。再次打开同一 URL 时会重新下载源视频，因此仍可继续补镜头。
+
+MCP 启动时会执行一次过期检查。要让 macOS 在 Claude 没有运行时也每小时巡检，可安装 [LaunchAgent 示例](examples/launchd.com.film-matinee.cache-cleanup.plist.example)。TTL 也可用 `FILM_MATINEE_CACHE_TTL_HOURS` 调整 MCP 启动检查。
+
 本地视频也可以使用同一个入口：未提供 `subtitle_path` 时，会先找同名 `.ass` / `.ssa` / `.srt` / `.vtt`，再尝试提取 MKV 等容器里的文本字幕。图片型 PGS/VobSub 不会被误当成文本字幕。
 
 URL 能力以 `yt-dlp` 实际支持和有权访问的来源为限，不绕过 DRM。登录后才能访问的来源可显式传 `cookies_from_browser="chrome"` 等参数；默认绝不读取浏览器 cookies。
+
+有些站点把字幕直接烧进视频像素，而不提供独立字幕轨。此时画面和关键帧仍保留字幕，但 sidecar 会为空；当前版本不会把像素字幕假装成可靠文本。可显式提供同步字幕文件，烧录字幕 OCR 仍属于后续能力。
 
 ## 生成视觉 Sheet
 
@@ -139,6 +146,8 @@ claude mcp add -s local film-matinee -- python3 "$PWD/tools/film_matinee_reader_
 - `film_chunk(manifest_path, index)`：读取指定 chunk。
 - `film_locate(manifest_path, timecode="", text="")`：兜底定位。
 - `film_refine_chunk(manifest_path, chunk_index, pin_times)`：发现遗漏时只重做该节，让指定时刻作为必保候选参与竞争，并保留后续 chunks、游标和批注。
+- `film_cache_status()`：列出 URL 源视频大小、闲置时间和预计过期时间。
+- `film_cache_cleanup(dry_run=true)`：预览过期清理；显式设为 `false` 才立即执行。自动定时器直接调用同一安全清理逻辑。
 - `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
 - `film_reply(manifest_path, note_id, text, author="user")`：把聊天挂在批注下。
 

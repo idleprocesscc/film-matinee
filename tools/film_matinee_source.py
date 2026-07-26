@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
+try:
+    from film_matinee_cache import register_cache, touch_cache
+except ImportError:  # Imported as tools.film_matinee_source in tests.
+    from .film_matinee_cache import register_cache, touch_cache
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 SUBTITLE_EXTS = {".ass", ".ssa", ".srt", ".vtt"}
@@ -223,6 +228,7 @@ def prepare_url(
     if not refresh:
         cached = _read_cached_source(out_dir, source)
         if cached is not None:
+            touch_cache(out_dir)
             return cached
 
     source_dir = out_dir / "source"
@@ -295,6 +301,7 @@ def prepare_url(
         metadata=metadata,
     )
     _write_source_record(out_dir, prepared)
+    register_cache(out_dir, "url")
     return prepared
 
 

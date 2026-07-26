@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS LaunchAgent: hourly cleanup of URL-downloaded source media that has not
+  been accessed for 24 hours. Generated sheets, subtitles, progress, and notes
+  are preserved. Replace all REPLACE_* values before loading.
+
+  Install:
+    cp this file ~/Library/LaunchAgents/com.film-matinee.cache-cleanup.plist
+    launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.film-matinee.cache-cleanup.plist
+
+  Inspect:
+    launchctl print gui/$UID/com.film-matinee.cache-cleanup
+
+  Remove:
+    launchctl bootout gui/$UID/com.film-matinee.cache-cleanup
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.film-matinee.cache-cleanup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_WITH_PYTHON</string>
+        <string>REPLACE_WITH_FULL_PATH/film-matinee/tools/film_matinee_cache.py</string>
+        <string>cleanup</string>
+        <string>--max-age-hours</string>
+        <string>24</string>
+        <string>--root</string>
+        <string>REPLACE_WITH_HOME/.film-matinee-cache</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_FULL_PATH/film-matinee</string>
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_HOME/Library/Logs/film-matinee-cache-cleanup.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_HOME/Library/Logs/film-matinee-cache-cleanup.err.log</string>
+</dict>
+</plist>

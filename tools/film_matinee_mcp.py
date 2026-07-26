@@ -39,6 +39,21 @@ except ImportError:  # Imported as tools.film_matinee_mcp in tests.
         is_url as _is_url_source,
     )
 
+try:
+    from film_matinee_cache import (
+        DEFAULT_MAX_AGE_HOURS,
+        cache_status as _cache_status,
+        cleanup_expired as _cleanup_expired_cache,
+        touch_cache as _touch_url_cache,
+    )
+except ImportError:  # Imported as tools.film_matinee_mcp in tests.
+    from .film_matinee_cache import (
+        DEFAULT_MAX_AGE_HOURS,
+        cache_status as _cache_status,
+        cleanup_expired as _cleanup_expired_cache,
+        touch_cache as _touch_url_cache,
+    )
+
 
 mcp = FastMCP(
     "film-matinee",
@@ -51,7 +66,9 @@ mcp = FastMCP(
         "not been converted into sheets yet. Use film_open for a URL or when "
         "subtitle discovery and source preparation should be automatic. Use "
         "film_refine_chunk only after a known-important timestamp was missed; "
-        "it is a repair lens, not the normal viewing flow."
+        "it is a repair lens, not the normal viewing flow. URL-downloaded source "
+        "media expires after 24 hours without viewing activity; sheets, subtitles, "
+        "progress, and notes remain available."
     ),
 )
 
@@ -506,6 +523,22 @@ def _find_chunk_for_timecode(sheets: list[dict], timecode: float) -> int:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _format_bytes(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TiB"
+
+
+def _touch_cache_safely(out_dir: Path) -> None:
+    try:
+        _touch_url_cache(out_dir)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"[film-matinee] cache access update skipped: {exc}", file=sys.stderr)
 
 
 @contextmanager
@@ -1050,6 +1083,66 @@ def film_refine_chunk(
 
 
 @mcp.tool()
+def film_cache_status(max_age_hours: float = DEFAULT_MAX_AGE_HOURS) -> str:
+    """List URL source-media caches and their inactivity expiry times.
+
+    Generated sheets, subtitle sidecars, cursor state, and annotations are not
+    expiry targets. Local source files are never managed by this cache policy.
+    """
+    entries = _cache_status(max_age_hours=float(max_age_hours))
+    lines = [
+        f"policy: delete URL-downloaded source video after {float(max_age_hours):g} hours without film access",
+        "preserved: sheets, subtitle sidecars, manifest, progress, annotations",
+        f"url_caches: {len(entries)}",
+    ]
+    for entry in entries:
+        state = "expired" if entry["expired"] else "active"
+        if not entry["video_exists"]:
+            state = "source-media-removed"
+        if entry["job_running"]:
+            state = "generation-running"
+        lines.append(
+            f"- {entry.get('title') or Path(entry['path']).name}: "
+            f"{_format_bytes(int(entry['video_bytes']))}, {state}, "
+            f"idle={float(entry['age_hours']):.2f}h, expires={entry['expires_at']}, "
+            f"path={entry['path']}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def film_cache_cleanup(
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    dry_run: bool = True,
+) -> str:
+    """Remove expired URL-downloaded source videos; defaults to preview only.
+
+    Set dry_run=false to delete. The operation cannot delete local source
+    videos or generated sheets/sidecars/progress/annotations. Active generation
+    jobs are skipped. A removed URL source can be downloaded again by film_open.
+    """
+    result = _cleanup_expired_cache(
+        max_age_hours=float(max_age_hours),
+        dry_run=bool(dry_run),
+    )
+    reclaimed_key = "bytes_would_reclaim" if dry_run else "bytes_reclaimed"
+    count_key = "files_would_delete" if dry_run else "files_deleted"
+    lines = [
+        f"dry_run: {bool(dry_run)}",
+        f"caches_checked: {result['caches_checked']}",
+        f"source_videos: {result[count_key]}",
+        f"space: {_format_bytes(int(result[reclaimed_key]))}",
+        "preserved: sheets, subtitle sidecars, manifest, progress, annotations",
+    ]
+    for item in result["deleted"]:
+        verb = "would delete" if dry_run else "deleted"
+        lines.append(f"- {verb}: {item['video_path']} ({_format_bytes(int(item['bytes']))})")
+    for item in result["skipped"]:
+        lines.append(f"- skipped: {item['path']} ({item['reason']})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
     """Check a film_generate job and report manifest/sheet progress."""
     out = Path(out_dir).expanduser().resolve()
@@ -1126,6 +1219,7 @@ def film_generate_status(out_dir: str, tail_lines: int = 20) -> str:
 def film_overview(manifest_path: str) -> str:
     """Summarize available generated chunks for a film."""
     path, manifest = _load_manifest(manifest_path)
+    _touch_cache_safely(path.parent)
     source_info = manifest.get("source_info") or {}
     lines = [
         f"title: {manifest.get('title', 'Film')}",
@@ -1152,6 +1246,7 @@ def film_overview(manifest_path: str) -> str:
 def film_start(manifest_path: str, start_index: int = 0) -> list[Any]:
     """Set the reading cursor and return the first chunk to read."""
     path, manifest = _load_manifest(manifest_path)
+    _touch_cache_safely(path.parent)
     sheets = manifest.get("sheets", [])
     if not sheets:
         return [_availability_message(path, 0)]
@@ -1167,6 +1262,7 @@ def film_start(manifest_path: str, start_index: int = 0) -> list[Any]:
 def film_next(manifest_path: str) -> list[Any]:
     """Read the chunk at the current cursor, then advance the cursor."""
     path, manifest = _load_manifest(manifest_path)
+    _touch_cache_safely(path.parent)
     sheets = manifest.get("sheets", [])
     if not sheets:
         return [_availability_message(path, 0)]
@@ -1184,6 +1280,7 @@ def film_next(manifest_path: str) -> list[Any]:
 def film_chunk(manifest_path: str, index: int, advance_cursor: bool = False) -> list[Any]:
     """Read one explicit chunk by index."""
     path, manifest = _load_manifest(manifest_path)
+    _touch_cache_safely(path.parent)
     sheet = _sheet_by_index(manifest, int(index))
     if advance_cursor:
         sheets = manifest.get("sheets", [])

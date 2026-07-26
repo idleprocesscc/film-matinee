@@ -19,6 +19,8 @@ film_open(
 
 `source` 也可以是本地 `.mkv` / `.mp4` 路径。没有显式传字幕时，本地视频会先寻找同名 sidecar，再尝试提取文本型内嵌字幕；URL 会优先人工字幕，再选择自动字幕。VTT 原本带有 `<v Speaker>` 时会保留为 `[Speaker]`，不会在清理标签时丢掉已有角色信息。默认不会读取浏览器 cookies，需要时再显式传 `cookies_from_browser="chrome"`。
 
+如果站点把字幕烧进画面而没有独立轨，`subtitle_path` 会是空的：sheet 中仍能看到字幕像素，但 sidecar 没有文字。当前不会自动 OCR 后把不确定结果当成精确字幕；需要完整 sidecar 时应传入同步的 ASS/SRT/VTT。
+
 拿返回的 `out_dir` 看进度：
 
 ```text
@@ -26,6 +28,8 @@ film_generate_status(out_dir)
 ```
 
 状态会显示 `phase: probing / downloading / generating / complete` 和 `available_sheets`。只要 `available_sheets` 大于 0，就能立刻 `film_start(manifest)`；追上后台进度时，`film_next` 会返回 waiting，稍后继续即可。
+
+URL 下载的源视频在连续 24 小时没有 `film_overview` / `film_start` / `film_next` / `film_chunk` 活动后过期。清理只针对输出目录下安全识别出的 `source/video.*`；本地原片、sheets、sidecars、manifest、游标和批注均保留。运行中的生成任务会自动跳过。
 
 ## 生成 Sheet
 
@@ -79,6 +83,8 @@ python3 tools/generate_film_matinee_sheets.py \
 - `film_chunk(manifest_path, index)`：直接读某节。
 - `film_locate(manifest_path, timecode="", text="")`：兜底检索。
 - `film_refine_chunk(manifest_path, chunk_index, pin_times="01:30:39")`：已知某个短事件遗漏时重做单节，指定时刻优先保留；后续 chunks、游标和批注不变。
+- `film_cache_status()`：查看 URL 源视频大小、最近活动和过期时间。
+- `film_cache_cleanup(dry_run=true)`：预演当前过期清理；设 `dry_run=false` 才执行。
 - `film_note(manifest_path, chunk_index, text, timecode="")`：AI 留批注。
 - `film_reply(manifest_path, note_id, text, author="user")`：把聊天回复挂到某条批注下。
 - `film_notes(manifest_path, chunk_index=None)`：读批注。
